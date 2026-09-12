@@ -1,0 +1,20 @@
+[package]
+name = "acadsharp-rs"
+version = "0.1.0"
+edition = "2024"
+authors = ["Roman Goldmann <roman@devshell.org>"]
+license = "MIT"
+description = "Safe, idiomatic Rust decoder for DWG backed by the ACadSharp NativeAOT artifacts from libviprs-dep"
+repository = "https://github.com/libviprs/acadsharp-rs"
+# Matches the floor the rest of the org declares. The `msrv` CI job pins this
+# exact toolchain and fails if this line, the toolchain it installs and the
+# README ever disagree.
+rust-version = "1.97"
+
+[lints.rust]
+deprecated = "deny"
+
+[lints.clippy]
+incompatible_msrv = "warn"
+
+[dependencies]
