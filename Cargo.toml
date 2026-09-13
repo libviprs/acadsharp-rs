@@ -26,3 +26,11 @@ deprecated = "deny"
 incompatible_msrv = "warn"
 
 [dependencies]
+
+# The allocation proof runs without the test harness on purpose. It arms a
+# counting global allocator, and a second test thread allocating inside that
+# window would make the number it reports mean nothing.
+[[test]]
+name = "alloc_bound"
+path = "tests/alloc_bound.rs"
+harness = false

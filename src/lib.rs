@@ -2,7 +2,8 @@
 //! published by [`libviprs-dep`].
 //!
 //! The safe API is still being built. What exists today is [`ffi`], the raw
-//! transcription of `viprs_acadsharp.h`, and [`abi`], which holds the three
+//! transcription of `viprs_acadsharp.h`, [`batch`], the decoder for the VACB
+//! wire protocol that library writes, and [`abi`], which holds the three
 //! constants that pin this crate to one version of that header and the
 //! handshake that refuses a library built from a different one.
 //!
@@ -20,8 +21,9 @@
 //! [`EXPECTED_ABI_FINGERPRINT`] are generated from that file's bytes at build
 //! time. Nobody types them, so nothing in the crate can go on agreeing with a
 //! header that moved. They live in [`abi`] and are re-exported here, because a
-//! leaf module both [`ffi`] and the wire decoder can depend on beats three
-//! names at the root that everything reaches up for.
+//! leaf module both [`ffi`] and [`batch`] can depend on beats three names at
+//! the root that everything reaches up for. [`batch::WIRE_VERSION`] is the same
+//! number narrowed once to the `u16` the batch header actually carries.
 //!
 //! # Linking the native library
 //!
@@ -30,12 +32,13 @@
 //! emits the link lines and sets `cfg(acadsharp_linked)`. With no archive the
 //! crate still builds, checks and documents; everything that calls the library
 //! is simply compiled out, which is what [`abi::handshake`] being the one
-//! gated function in here is about.
+//! gated function in here is about. [`batch`] never links: it reads bytes.
 //!
 //! [`libviprs-dep`]: https://github.com/libviprs/libviprs-dep
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod abi;
+pub mod batch;
 pub mod ffi;
 
 pub use abi::{EXPECTED_ABI_FINGERPRINT, EXPECTED_ABI_VERSION, EXPECTED_WIRE_VERSION};
