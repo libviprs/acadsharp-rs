@@ -87,7 +87,22 @@ pub const MAGIC: [u8; 4] = *b"VACB";
 /// The only wire version this module parses. Anything else is an
 /// [`BatchError::AbiMismatch`], because a record type this module does know may
 /// have changed shape underneath it.
-pub const WIRE_VERSION: u16 = 2;
+///
+/// This is [`crate::EXPECTED_WIRE_VERSION`], which `build.rs` derives from the
+/// bytes of the vendored header, narrowed to the `u16` the batch header
+/// actually carries. Two copies of the same number is how a decoder ends up
+/// confidently parsing a layout that moved underneath it, so there is one
+/// copy, and the narrowing is a compile-time `assert!` rather than a bare
+/// `as u16`: a truncating cast at header wire version 65538 would have this
+/// module accept a batch declaring 2 while reporting agreement, which is the
+/// exact failure the derived constant exists to stop.
+pub const WIRE_VERSION: u16 = {
+    assert!(
+        crate::EXPECTED_WIRE_VERSION <= u16::MAX as u32,
+        "the header's wire version does not fit the wire's own u16 field"
+    );
+    crate::EXPECTED_WIRE_VERSION as u16
+};
 
 /// Bytes of batch header before the first record.
 pub const BATCH_HEADER_LEN: usize = 12;
