@@ -31,14 +31,17 @@
 //! and size in here against it, so a field that drifts is a failing test rather
 //! than a plausible-looking number read out of its neighbour's bytes.
 //!
+//! Nothing in here decides anything. The one piece of policy this crate has so
+//! far, the comparison between what the library reports and what the vendored
+//! header declares, lives in [`crate::abi`], because a transcription that
+//! reads a constant out of its own parent module has stopped being one.
+//!
 //! [`tests/ffi_layout.rs`]: https://github.com/libviprs/acadsharp-rs/blob/main/tests/ffi_layout.rs
 
 // The header's names, kept exactly. A Rust-cased alias for each would be a
 // second spelling of the same thing, and a boundary where you have to remember
 // which spelling you are looking at is a boundary somebody gets wrong.
 #![allow(non_camel_case_types)]
-
-use core::fmt;
 
 // ---------------------------------------------------------------------------
 // Result codes
@@ -141,7 +144,8 @@ pub struct viprs_acad_decode_handle {
 /// default for that field, so a caller can set one bound without knowing the
 /// rest. Exceeding any of them is [`VIPRS_ACAD_LIMIT_EXCEEDED`].
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct viprs_acad_limits_v1 {
     /// `size_of` this struct, set by the caller.
     pub struct_size: u32,
@@ -171,7 +175,8 @@ pub struct viprs_acad_limits_v1 {
 /// The drawing-format range in particular comes from the backing reader and
 /// moves when it does.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct viprs_acad_capabilities_v1 {
     /// `size_of` this struct, set by the caller.
     pub struct_size: u32,
@@ -204,7 +209,8 @@ pub struct viprs_acad_capabilities_v1 {
 /// The name is written into a caller buffer rather than returned as a pointer,
 /// so nothing the callee owns outlives the call.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct viprs_acad_view_info_v1 {
     /// `size_of` this struct, set by the caller.
     pub struct_size: u32,
@@ -229,6 +235,94 @@ pub struct viprs_acad_view_info_v1 {
     pub entity_count: u64,
 }
 
+impl viprs_acad_limits_v1 {
+    /// The `struct_version` this build of the crate fills in.
+    ///
+    /// The header spells this one in prose rather than in a `#define`, so it
+    /// is the single number in the crate I could not derive from the header's
+    /// bytes. It moves when the boundary grows a second version of this
+    /// struct, and the callee is the one that decides whether it recognises
+    /// the pair.
+    pub const STRUCT_VERSION: u32 = 1;
+}
+
+impl Default for viprs_acad_limits_v1 {
+    /// Every bound left to the library, in a struct it accepts.
+    ///
+    /// `struct_size` and `struct_version` are filled in, and every bound is
+    /// zero, which ABI.md defines as "you pick". A derived `Default` gets the
+    /// first two wrong: `struct_size` of 0 is a size the callee does not
+    /// recognise, and it answers [`VIPRS_ACAD_INVALID_ARGUMENT`] rather than
+    /// reading past what was allocated. Measured against the real library,
+    /// which is also what `tests/ffi_handshake.rs` asserts, so this cannot
+    /// quietly go back to being zeros.
+    fn default() -> Self {
+        Self {
+            struct_size: size_of::<Self>() as u32,
+            struct_version: Self::STRUCT_VERSION,
+            max_input_bytes: 0,
+            max_entities: 0,
+            max_string_bytes: 0,
+            max_polyline_points: 0,
+            max_block_depth: 0,
+            reserved0: 0,
+            max_output_bytes: 0,
+        }
+    }
+}
+
+impl viprs_acad_capabilities_v1 {
+    /// The `struct_version` this build of the crate fills in. See
+    /// [`viprs_acad_limits_v1::STRUCT_VERSION`].
+    pub const STRUCT_VERSION: u32 = 1;
+}
+
+impl Default for viprs_acad_capabilities_v1 {
+    /// An out-struct the library will fill, rather than one it refuses.
+    ///
+    /// Everything but the two header fields is zero, because every one of them
+    /// is an answer the callee writes.
+    fn default() -> Self {
+        Self {
+            struct_size: size_of::<Self>() as u32,
+            struct_version: Self::STRUCT_VERSION,
+            abi_version: 0,
+            wire_version: 0,
+            dwg_version_min: 0,
+            dwg_version_max: 0,
+            supports_block_expansion: 0,
+            supports_warnings: 0,
+            reserved0: 0,
+            reserved1: 0,
+            reserved2: 0,
+        }
+    }
+}
+
+impl viprs_acad_view_info_v1 {
+    /// The `struct_version` this build of the crate fills in. See
+    /// [`viprs_acad_limits_v1::STRUCT_VERSION`].
+    pub const STRUCT_VERSION: u32 = 1;
+}
+
+impl Default for viprs_acad_view_info_v1 {
+    /// An out-struct the library will fill, rather than one it refuses. Same
+    /// as the capabilities one: two fields set, the answers left at zero.
+    fn default() -> Self {
+        Self {
+            struct_size: size_of::<Self>() as u32,
+            struct_version: Self::STRUCT_VERSION,
+            index: 0,
+            kind: 0,
+            min_x: 0.0,
+            min_y: 0.0,
+            max_x: 0.0,
+            max_y: 0.0,
+            entity_count: 0,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Entry points
 //
@@ -241,10 +335,12 @@ pub struct viprs_acad_view_info_v1 {
 
 unsafe extern "C" {
     /// The `VIPRS_ACAD_ABI_VERSION` this library was built as. Never fails.
+    #[must_use = "this call does nothing but hand back the number, so dropping it is dropping the whole call"]
     pub fn viprs_acad_abi_version() -> u32;
 
     /// The first eight bytes of the sha256 of the header this library was
     /// built against, big-endian. Never fails.
+    #[must_use = "this call does nothing but hand back the number, so dropping it is dropping the whole call"]
     pub fn viprs_acad_abi_fingerprint() -> u64;
 
     /// Fills `out` and writes the pinned ACadSharp version into
@@ -254,6 +350,7 @@ unsafe extern "C" {
     /// through `required`; that sizing call returns [`VIPRS_ACAD_OK`] and
     /// fills the struct as well. A non-null buffer shorter than the string
     /// writes nothing at all and returns [`VIPRS_ACAD_BUFFER_TOO_SMALL`].
+    #[must_use = "a dropped result code is a call nobody checked, and the next thing that happens is a null handle getting dereferenced"]
     pub fn viprs_acad_get_capabilities_v1(
         out: *mut viprs_acad_capabilities_v1,
         acadsharp_version_utf8: *mut u8,
@@ -265,6 +362,7 @@ unsafe extern "C" {
     ///
     /// `path` is UTF-8 and is not null terminated; `path_len` is its byte
     /// length. `limits` may be null for the defaults.
+    #[must_use = "a dropped result code is a call nobody checked, and the next thing that happens is a null handle getting dereferenced"]
     pub fn viprs_acad_open_path_utf8(
         path: *const u8,
         path_len: u64,
@@ -274,6 +372,7 @@ unsafe extern "C" {
 
     /// Opens a document from caller-owned bytes. The caller owns `data` for the
     /// duration of this call only.
+    #[must_use = "a dropped result code is a call nobody checked, and the next thing that happens is a null handle getting dereferenced"]
     pub fn viprs_acad_open_memory(
         data: *const u8,
         data_len: u64,
@@ -283,10 +382,12 @@ unsafe extern "C" {
 
     /// How many views the document holds. Indices run from zero to one less
     /// than this.
+    #[must_use = "a dropped result code is a call nobody checked, and the next thing that happens is a null handle getting dereferenced"]
     pub fn viprs_acad_view_count(h: *mut viprs_acad_handle, out_count: *mut u32) -> u32;
 
     /// Fills `out` for one view and writes its name into `name_utf8`, using the
     /// same buffer convention as the capabilities call.
+    #[must_use = "a dropped result code is a call nobody checked, and the next thing that happens is a null handle getting dereferenced"]
     pub fn viprs_acad_get_view_info_v1(
         h: *mut viprs_acad_handle,
         index: u32,
@@ -302,6 +403,7 @@ unsafe extern "C" {
     /// reads it between batches and never writes it, any non-zero value stops
     /// the decode with [`VIPRS_ACAD_CANCELED`], and it must outlive the decode
     /// handle.
+    #[must_use = "a dropped result code is a call nobody checked, and the next thing that happens is a null handle getting dereferenced"]
     pub fn viprs_acad_decode_begin(
         h: *mut viprs_acad_handle,
         view_index: u32,
@@ -312,8 +414,17 @@ unsafe extern "C" {
     /// Writes the next batch into `buf`.
     ///
     /// `written` is the byte count produced and `done` is 1 when the stream is
-    /// complete, and both are written only on [`VIPRS_ACAD_OK`] and
-    /// [`VIPRS_ACAD_BUFFER_TOO_SMALL`]. A batch never spans two calls: a `cap`
+    /// complete. Zero both before the call and read them only on
+    /// [`VIPRS_ACAD_OK`] and [`VIPRS_ACAD_BUFFER_TOO_SMALL`]: every other code
+    /// leaves them undefined as far as this boundary is concerned. That is a
+    /// rule for the caller rather than a promise from the callee, and the
+    /// difference matters, because the pinned library does in fact write both
+    /// (as zero) on [`VIPRS_ACAD_INVALID_ARGUMENT`], [`VIPRS_ACAD_CANCELED`]
+    /// and [`VIPRS_ACAD_LIMIT_EXCEEDED`]. Measured, on this archive, today. A
+    /// transcription that turns that into a guarantee is inventing one the
+    /// contract does not make and the next build need not keep.
+    ///
+    /// A batch never spans two calls: a `cap`
     /// too small for the next batch returns [`VIPRS_ACAD_BUFFER_TOO_SMALL`]
     /// with the needed size in `written`, having written and consumed nothing.
     /// A `cap` of 0 is [`VIPRS_ACAD_INVALID_ARGUMENT`] instead, because a zero
@@ -322,6 +433,7 @@ unsafe extern "C" {
     /// Every other refusal is latched: once a decode fails for a reason of its
     /// own, every later call on the same handle returns that same code, writes
     /// nothing and reports `done` 0.
+    #[must_use = "a dropped result code is a call nobody checked, and the next thing that happens is a null handle getting dereferenced"]
     pub fn viprs_acad_decode_next_batch(
         d: *mut viprs_acad_decode_handle,
         buf: *mut u8,
@@ -336,82 +448,4 @@ unsafe extern "C" {
     /// Releases a document handle and every decode handle still open on it.
     /// Null is a no-op. Never fails.
     pub fn viprs_acad_close(h: *mut viprs_acad_handle);
-}
-
-// ---------------------------------------------------------------------------
-// The handshake
-// ---------------------------------------------------------------------------
-
-/// What the handshake found when the library and the vendored header disagree.
-///
-/// Both pairs are carried, not just the one that differed, because the pair
-/// that matched is what tells you which kind of drift this is. Same version and
-/// a different fingerprint means a comment-only edit or a rebuild from another
-/// commit; different versions means the contract itself moved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct AbiMismatch {
-    /// The version the vendored header declares.
-    pub expected_abi_version: u32,
-    /// The version the library reports.
-    pub actual_abi_version: u32,
-    /// The fingerprint of the vendored header.
-    pub expected_fingerprint: u64,
-    /// The fingerprint the library reports.
-    pub actual_fingerprint: u64,
-}
-
-impl fmt::Display for AbiMismatch {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "the native library does not match the header this crate was built against: \
-             it reports ABI version {} and fingerprint {:#018x}, and the header declares \
-             version {} and fingerprint {:#018x}",
-            self.actual_abi_version,
-            self.actual_fingerprint,
-            self.expected_abi_version,
-            self.expected_fingerprint
-        )
-    }
-}
-
-impl std::error::Error for AbiMismatch {}
-
-/// Asks the library which contract it was built against, and refuses it if that
-/// is not this one.
-///
-/// The version is the coarse check and the fingerprint is the fine one. They
-/// differ exactly when the header and the library came from different commits,
-/// and that failure is invisible without this call: the library loads, every
-/// symbol resolves, and a struct field sits four bytes from where this crate
-/// believes it is. Nothing else in the crate touches the library before this
-/// succeeds.
-///
-/// # Safety
-///
-/// The caller must have linked the native library, which is what
-/// `cfg(acadsharp_linked)` says and why this function carries that gate.
-/// Beyond that there is no precondition: both calls take no arguments, return
-/// a plain integer, touch no caller memory and are documented never to fail,
-/// so there is nothing here for a caller to get wrong.
-#[cfg(acadsharp_linked)]
-pub unsafe fn handshake() -> Result<(), AbiMismatch> {
-    // SAFETY: argument-free, infallible, and linked (see the gate above).
-    let actual_abi_version = unsafe { viprs_acad_abi_version() };
-    // SAFETY: the same.
-    let actual_fingerprint = unsafe { viprs_acad_abi_fingerprint() };
-
-    if actual_abi_version == crate::EXPECTED_ABI_VERSION
-        && actual_fingerprint == crate::EXPECTED_ABI_FINGERPRINT
-    {
-        return Ok(());
-    }
-
-    Err(AbiMismatch {
-        expected_abi_version: crate::EXPECTED_ABI_VERSION,
-        actual_abi_version,
-        expected_fingerprint: crate::EXPECTED_ABI_FINGERPRINT,
-        actual_fingerprint,
-    })
 }

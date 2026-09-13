@@ -154,6 +154,18 @@ jobs:
       ACADSHARP_RELEASE: acadsharp-3.7.1-viprs.1
       ACADSHARP_ARCHIVE: acadsharp-linux-x64.tgz
       ACADSHARP_ARCHIVE_SHA256: 4cbdbbdd03c4431780ddca80a1d660e6940ff561734d666e162d6fb50438136e
+      # This job exists to call the native library, and says so here rather
+      # than in a step. `tests/native_lane_is_live.rs` reads it and fails when
+      # the cfg is absent, whatever `ACADSHARP_NATIVE_DIR` ended up as.
+      #
+      # The arm that keys on ACADSHARP_NATIVE_DIR cannot cover this: it fires
+      # only when the variable is set, so the likelier failure (the fetch step
+      # edited, renamed or refactored until it never exports anything) runs
+      # zero native tests and goes green with the guard satisfied. Measured,
+      # before this line existed: `ffi_handshake` reported 0 tests and
+      # `native_lane_is_live` reported ok. A job-level `env:` is the part a
+      # step edit cannot lose, which is why it is up here and not down there.
+      ACADSHARP_REQUIRE_NATIVE: 1
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -210,7 +222,3 @@ jobs:
       # `--all-targets` skips doctests, so they need their own line or the
       # examples in the public API documentation are compiled by nothing.
       - run: cargo test --doc
-      # The shipped configuration, which nothing else here runs. Debug and
-      # release disagree on the wrap vectors, so the two cheapest targets that
-      # care go through release as well. They take under a second.
-      - run: cargo test --release --test malformed --test sweeps

@@ -20,28 +20,41 @@ mod common;
 /// that is annoying to argue with.
 fn codes_from_header() -> BTreeMap<String, u64> {
     let text = common::header_text();
-    let lines: Vec<&str> = text.lines().collect();
+    // Two views of one file. The banners that delimit the section are
+    // themselves comments, so the section is found in the raw text; the
+    // defines are read out of the stripped text, so a `#define` hiding inside
+    // a comment in this section is not one of them. The stripper keeps
+    // newlines, which is what lets one line number mean the same line in both.
+    let stripped = common::header::strip_block_comments(&text);
+    let raw: Vec<&str> = text.lines().collect();
+    let code: Vec<&str> = stripped.lines().collect();
+    assert_eq!(
+        raw.len(),
+        code.len(),
+        "the comment stripper has to leave the line numbering alone for these two views to line up"
+    );
 
-    let start = lines
+    let start = raw
         .iter()
         .position(|l| l.trim() == "* Result codes")
         .expect("the header has no `Result codes` banner, so this parser has no section to read");
 
     let mut out = BTreeMap::new();
     let mut seen_a_define = false;
-    for line in &lines[start + 1..] {
-        let trimmed = line.trim();
-        // The next banner ends the section. Checking for it only after at
-        // least one define means the banner that closes the section's own
-        // comment block does not end it before it starts.
-        if seen_a_define && trimmed.starts_with("/* ---") {
+    for (raw_line, code_line) in raw[start + 1..].iter().zip(&code[start + 1..]) {
+        // The next banner ends the section, and it is read from the raw text
+        // because it is a comment. Checking for it only after at least one
+        // define means the banner that closes the section's own comment block
+        // does not end it before it starts.
+        if seen_a_define && raw_line.trim().starts_with("/* ---") {
             break;
         }
+        let trimmed = code_line.trim();
         if !trimmed.starts_with("#define ") {
             continue;
         }
         seen_a_define = true;
-        let defines = common::integer_defines(trimmed);
+        let defines = common::header::integer_defines(trimmed);
         for (name, value) in defines {
             assert!(
                 out.insert(name.clone(), value).is_none(),

@@ -99,9 +99,16 @@ pub fn sha256(message: &[u8]) -> [u8; 32] {
 /// A digest as lower-case hex, which is the shape every `.sha256` file and
 /// every `sha256sum` line in this org uses.
 pub fn hex(digest: &[u8]) -> String {
+    // `write!` into the one buffer rather than `push_str(&format!(..))`, which
+    // allocates a `String` per byte and throws each one away. Thirty-two of
+    // them per call is nothing here, and it is still the wrong shape to copy
+    // out of.
+    use std::fmt::Write;
+
     let mut out = String::with_capacity(digest.len() * 2);
     for byte in digest {
-        out.push_str(&format!("{byte:02x}"));
+        // Writing to a `String` cannot fail, so there is no error to handle.
+        let _ = write!(out, "{byte:02x}");
     }
     out
 }

@@ -20,6 +20,10 @@
 //! `MSRV` and `Docs` never link one. So a missing archive is a warning and an
 //! absent `cfg`, never an error.
 
+#[path = "build/header.rs"]
+mod header;
+#[path = "build/linkinfo.rs"]
+mod linkinfo;
 #[path = "build/sha256.rs"]
 mod sha256;
 
@@ -35,6 +39,8 @@ fn main() {
     // anything in the package changed", so every input this script reads has
     // to be listed, this file and the hash it pulls in included.
     println!("cargo::rerun-if-changed=build.rs");
+    println!("cargo::rerun-if-changed=build/header.rs");
+    println!("cargo::rerun-if-changed=build/linkinfo.rs");
     println!("cargo::rerun-if-changed=build/sha256.rs");
     println!("cargo::rerun-if-changed={HEADER}");
     println!("cargo::rerun-if-changed={HEADER_DIGEST}");
@@ -58,8 +64,8 @@ fn main() {
 
     let header_text = String::from_utf8(header_bytes)
         .expect("the vendored header is not valid UTF-8, which no version of it has ever been");
-    let abi_version = integer_define(&header_text, "VIPRS_ACAD_ABI_VERSION");
-    let wire_version = integer_define(&header_text, "VIPRS_ACAD_WIRE_VERSION");
+    let abi_version = u32_define(&header_text, "VIPRS_ACAD_ABI_VERSION");
+    let wire_version = u32_define(&header_text, "VIPRS_ACAD_WIRE_VERSION");
     // The fingerprint is the first eight bytes of the digest, big-endian, and
     // that definition lives in the header's own comment on
     // `viprs_acad_abi_fingerprint`.
@@ -132,21 +138,16 @@ fn verify_digest(path: &Path, actual: &str) {
     );
 }
 
-/// The value of one `#define NAME <decimal>` in the header.
-fn integer_define(header: &str, name: &str) -> u32 {
-    let needle = format!("#define {name} ");
-    for line in header.lines() {
-        let line = line.trim();
-        let Some(rest) = line.strip_prefix(&needle) else {
-            continue;
-        };
-        let token = rest.split_whitespace().next().unwrap_or_default();
-        let digits = token.trim_end_matches(['u', 'U']);
-        return digits.parse::<u32>().unwrap_or_else(|e| {
-            panic!("`#define {name} {token}` in {HEADER} is not a decimal u32: {e}")
-        });
-    }
-    panic!("{HEADER} has no `#define {name}`, so I have nothing to generate from");
+/// One `#define NAME <decimal>` from the header, as the `u32` the generated
+/// constants are typed as.
+///
+/// The parsing is `build/header.rs`, which `tests/` compiles too, so both
+/// sides of the cross-check read the header the same way.
+fn u32_define(header: &str, name: &str) -> u32 {
+    let value = header::integer_define(header, name, HEADER);
+    u32::try_from(value).unwrap_or_else(|_| {
+        panic!("`#define {name} {value}` in {HEADER} does not fit a u32, and the header's own field for it is 32 bits wide")
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +171,12 @@ fn resolve_archive() {
     let lib_dir = root.join("lib");
     let manifest = root.join("metadata").join("LINKINFO.json");
 
+    // Before anything at all is printed, because every line below carries the
+    // root and the one that says "no archive resolved" carries it too. A
+    // newline in `ACADSHARP_NATIVE_DIR` splits whichever line it lands in, and
+    // the second half is a directive the caller chose.
+    linkinfo::check_archive_root(&root, &manifest);
+
     if !lib_dir.is_dir() {
         warn_no_archive(&format!("{} has no lib/ directory", root.display()));
         return;
@@ -182,15 +189,35 @@ fn resolve_archive() {
 
     let text = std::fs::read_to_string(&manifest)
         .unwrap_or_else(|e| panic!("I could not read {}: {e}", manifest.display()));
-    let system_libraries = string_array_field(&text, "shared_system_libraries", &manifest);
+    let system_libraries = linkinfo::system_libraries(&text, "shared_system_libraries", &manifest);
+
+    // Where a downstream build script picks these up, through cargo's `links`
+    // key: `DEP_ACADSHARP_NATIVE_NATIVE_DIR` and `DEP_ACADSHARP_NATIVE_LIB_DIR`.
+    // Emitted after the control-character check above, like everything else
+    // carrying the root.
+    println!("cargo::metadata=native_dir={}", root.display());
+    println!("cargo::metadata=lib_dir={}", lib_dir.display());
 
     println!("cargo::rustc-link-search=native={}", lib_dir.display());
-    println!("cargo::rustc-link-lib=acadsharp_native");
+    // `dylib=` spelled out rather than left to the default it already is. This
+    // half of the build script links shared and only shared, and issue #3 adds
+    // the static recipe beside it, so both branches say which one they are.
+    println!("cargo::rustc-link-lib=dylib=acadsharp_native");
     for name in system_libraries {
         println!("cargo::rustc-link-lib={name}");
     }
 
-    // An rpath, because without it none of this runs.
+    // An rpath, because without it none of this runs, and it belongs to the
+    // shared branch above and to nothing else.
+    //
+    // Issue #3 inherits that sentence. `lib/` holds both the `.so` and the
+    // `.a`, and a bare `-l` picks the `.so`, so an rpath left on the static
+    // path means a binary that was supposed to be self-contained links, loads
+    // and runs correctly on the build machine by quietly using the shared
+    // library. That is the silent success the link contract warns about, and
+    // the assertion that catches it is on the binary (`readelf -d` showing no
+    // `NEEDED` and no `RUNPATH`) rather than on the answer the library gives
+    // back.
     //
     // `-l acadsharp_native` against a directory holding both a `.so` and a
     // `.a` picks the `.so`, and cargo does not put a build script's
@@ -216,71 +243,4 @@ fn warn_no_archive(why: &str) {
         "cargo::warning=no native archive resolved ({why}), so nothing is linked and every test \
          that calls the library is compiled out of this build."
     );
-}
-
-/// Reads one `"name": ["a", "b"]` field out of a JSON document.
-///
-/// A hand reader rather than `serde`, because this is one flat array of short
-/// strings and issue #3 is the PR that adds the dependency along with the rest
-/// of the manifest. It refuses anything it does not understand instead of
-/// guessing, so a manifest shape it was not written for stops the build rather
-/// than quietly linking less than it should.
-fn string_array_field(json: &str, field: &str, path: &Path) -> Vec<String> {
-    let key = format!("\"{field}\"");
-    let start = json.find(&key).unwrap_or_else(|| {
-        panic!(
-            "{} has no `{field}` field, so I cannot tell what to link",
-            path.display()
-        )
-    });
-
-    let rest = &json[start + key.len()..];
-    let open = rest.find('[').unwrap_or_else(|| {
-        panic!(
-            "`{field}` in {} is not followed by an array",
-            path.display()
-        )
-    });
-    let colon = &rest[..open];
-    assert!(
-        colon.trim() == ":",
-        "`{field}` in {} is not a plain `\"{field}\": [ ... ]` pair",
-        path.display()
-    );
-    let close = rest[open..].find(']').unwrap_or_else(|| {
-        panic!(
-            "`{field}` in {} opens an array it never closes",
-            path.display()
-        )
-    });
-    let body = &rest[open + 1..open + close];
-
-    let mut out = Vec::new();
-    for item in body.split(',') {
-        let item = item.trim();
-        if item.is_empty() {
-            continue;
-        }
-        assert!(
-            !item.contains('\\'),
-            "`{field}` in {} contains an escape sequence, and this reader does not decode those",
-            path.display()
-        );
-        let unquoted = item
-            .strip_prefix('"')
-            .and_then(|s| s.strip_suffix('"'))
-            .unwrap_or_else(|| {
-                panic!(
-                    "`{item}` in `{field}` of {} is not a quoted string",
-                    path.display()
-                )
-            });
-        assert!(
-            !unquoted.is_empty(),
-            "`{field}` in {} has an empty entry",
-            path.display()
-        );
-        out.push(unquoted.to_string());
-    }
-    out
 }

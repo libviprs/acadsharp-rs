@@ -78,14 +78,8 @@ fn the_fingerprint_is_the_first_eight_bytes_of_that_digest() {
 #[test]
 fn the_versions_come_from_the_header() {
     let text = common::header_text();
-    let defines = common::integer_defines(&text);
-    let lookup = |name: &str| -> u64 {
-        defines
-            .iter()
-            .find(|(n, _)| n == name)
-            .unwrap_or_else(|| panic!("the header does not `#define {name}`"))
-            .1
-    };
+    let name = common::header_name();
+    let lookup = |define: &str| -> u64 { common::header::integer_define(&text, define, &name) };
 
     assert_eq!(
         u64::from(EXPECTED_ABI_VERSION),
@@ -96,5 +90,53 @@ fn the_versions_come_from_the_header() {
         u64::from(EXPECTED_WIRE_VERSION),
         lookup("VIPRS_ACAD_WIRE_VERSION"),
         "`EXPECTED_WIRE_VERSION` and the header's `VIPRS_ACAD_WIRE_VERSION` disagree"
+    );
+}
+
+/// The exact shape the review proved past the build script: a `#define` for a
+/// name the header also defines properly, sitting inside a block comment.
+///
+/// A C compiler reads the second one and this crate has to read the same one,
+/// or every constant it generates describes a header nobody compiled.
+const A_DEFINE_INSIDE_A_COMMENT: &str = "\
+/* an example from an older revision:
+#define VIPRS_ACAD_ABI_VERSION 1u
+*/
+#define VIPRS_ACAD_ABI_VERSION 2u
+";
+
+/// Two live definitions of one name. C would take the second and warn about
+/// the redefinition, and I would rather not pick at all.
+const A_NAME_DEFINED_TWICE: &str = "\
+#define VIPRS_ACAD_ABI_VERSION 2u
+#define VIPRS_ACAD_ABI_VERSION 3u
+";
+
+#[test]
+fn a_define_inside_a_block_comment_does_not_win() {
+    let value = common::header::integer_define(
+        A_DEFINE_INSIDE_A_COMMENT,
+        "VIPRS_ACAD_ABI_VERSION",
+        "the snippet in this test",
+    );
+    assert_eq!(
+        value, 2,
+        "the header parser took the `#define` inside the block comment, so every constant it \
+         generates describes a header no C compiler would agree with"
+    );
+}
+
+#[test]
+fn a_name_the_header_defines_twice_is_refused() {
+    let message = common::refusal("a name defined twice", || {
+        let _ = common::header::integer_define(
+            A_NAME_DEFINED_TWICE,
+            "VIPRS_ACAD_ABI_VERSION",
+            "the snippet in this test",
+        );
+    });
+    assert!(
+        message.contains("VIPRS_ACAD_ABI_VERSION") && message.contains("2 times"),
+        "the refusal has to say which name is defined twice and how often, and it said: {message}"
     );
 }
