@@ -191,13 +191,33 @@ fn resolve_archive() {
         .unwrap_or_else(|e| panic!("I could not read {}: {e}", manifest.display()));
     let system_libraries = linkinfo::system_libraries(&text, "shared_system_libraries", &manifest);
 
+    // Where a downstream build script picks these up, through cargo's `links`
+    // key: `DEP_ACADSHARP_NATIVE_NATIVE_DIR` and `DEP_ACADSHARP_NATIVE_LIB_DIR`.
+    // Emitted after the control-character check above, like everything else
+    // carrying the root.
+    println!("cargo::metadata=native_dir={}", root.display());
+    println!("cargo::metadata=lib_dir={}", lib_dir.display());
+
     println!("cargo::rustc-link-search=native={}", lib_dir.display());
-    println!("cargo::rustc-link-lib=acadsharp_native");
+    // `dylib=` spelled out rather than left to the default it already is. This
+    // half of the build script links shared and only shared, and issue #3 adds
+    // the static recipe beside it, so both branches say which one they are.
+    println!("cargo::rustc-link-lib=dylib=acadsharp_native");
     for name in system_libraries {
         println!("cargo::rustc-link-lib={name}");
     }
 
-    // An rpath, because without it none of this runs.
+    // An rpath, because without it none of this runs, and it belongs to the
+    // shared branch above and to nothing else.
+    //
+    // Issue #3 inherits that sentence. `lib/` holds both the `.so` and the
+    // `.a`, and a bare `-l` picks the `.so`, so an rpath left on the static
+    // path means a binary that was supposed to be self-contained links, loads
+    // and runs correctly on the build machine by quietly using the shared
+    // library. That is the silent success the link contract warns about, and
+    // the assertion that catches it is on the binary (`readelf -d` showing no
+    // `NEEDED` and no `RUNPATH`) rather than on the answer the library gives
+    // back.
     //
     // `-l acadsharp_native` against a directory holding both a `.so` and a
     // `.a` picks the `.so`, and cargo does not put a build script's
