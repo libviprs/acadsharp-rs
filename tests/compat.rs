@@ -50,34 +50,12 @@ fn declaration() -> compat::Compat {
 /// hand as the check it feeds proves only that the hand is consistent. The
 /// archive-free CI jobs have no archive to read, so this is what they check
 /// against; the jobs that do have one check against that as well, below.
-const REAL_MANIFEST: &str = r#"{
-  "schema_version": 1,
-  "artifact_version": "3.7.1-viprs.1",
-  "acadsharp_version": "3.7.1",
-  "acadsharp_commit": "d7dc111023477d8a9fffc2153139459c95b4f345",
-  "dotnet_sdk": "10.0.401",
-  "target": "aarch64-unknown-linux-gnu",
-  "platform": "linux",
-  "cpu": "arm64",
-  "abi_version": 2,
-  "wire_version": 2,
-  "abi_header_sha256": "0502ac0f616115300fc52c84d99054e366a7ea520363f166d463b44c506233fa",
-  "abi_fingerprint": "0502ac0f61611530",
-  "shared_library": "lib/libacadsharp_native.so",
-  "shared_system_libraries": [
-    "m"
-  ],
-  "static_library": "lib/libacadsharp_native.a",
-  "static_init_library": "lib/libacadsharp_native_init.a",
-  "static_certified": true,
-  "static_system_libraries": [
-    "m"
-  ],
-  "static_link_args": [],
-  "dwg_version_min": 1014,
-  "dwg_version_max": 1032
-}
-"#;
+///
+/// It is a file rather than a string literal so that
+/// `tests/compat_build_script.rs`, which lays this manifest out on disk and
+/// runs the real build script over it, uses the same bytes and not a second
+/// copy that can drift.
+const REAL_MANIFEST: &str = include_str!("data/linkinfo/aarch64-unknown-linux-gnu.json");
 
 /// A manifest path to put in a refusal message when the manifest came from a
 /// string rather than from a file.
@@ -498,6 +476,63 @@ fn the_declared_digest_is_the_digest_the_archive_says_its_header_has() {
     );
 }
 
+/// The seam issue #3's parser lands on.
+///
+/// `check_archive` takes an [`compat::ArchiveIdentity`] and does not care who
+/// built it, so the real manifest parser builds one out of its own parsed
+/// fields and the hand reader below goes away with no test moving. This is that
+/// constructor, checked against the hand reader on the same bytes so the two
+/// ways of getting there cannot disagree while both exist.
+#[test]
+fn an_identity_can_be_built_from_two_strings_without_a_manifest() {
+    let read = compat::ArchiveIdentity::from_manifest_text(REAL_MANIFEST, &fake_manifest_path());
+    let built = compat::ArchiveIdentity::new("3.7.1-viprs.1", "3.7.1");
+    assert_eq!(
+        read, built,
+        "the hand reader and the constructor have to produce the same identity, or swapping one \
+         for the other at compose time changes what gets checked"
+    );
+    declaration().check_archive(&built, &fake_manifest_path(), compat::COMPAT_FILE);
+}
+
+/// A field name that appears as a value is not a second declaration of that
+/// field.
+///
+/// The hand reader used to count `"artifact_version"` anywhere in the text and
+/// refuse a manifest that said it twice, and this manifest is valid JSON that
+/// `serde_json` reads without a murmur: an unknown key holding a list of field
+/// names. Refusing it stops a build for a reason nobody can act on, which is a
+/// worse failure than the one the count was there to catch. The count is at key
+/// position now, and a manifest that really does declare the field twice is
+/// still refused.
+#[test]
+fn a_field_name_quoted_inside_a_value_is_not_a_second_declaration() {
+    let json = r#"{
+  "artifact_version": "3.7.1-viprs.1",
+  "acadsharp_version": "3.7.1",
+  "fields_this_consumer_reads": ["artifact_version", "acadsharp_version"]
+}"#;
+    let identity = compat::ArchiveIdentity::from_manifest_text(json, &fake_manifest_path());
+    assert_eq!(identity.artifact_version, "3.7.1-viprs.1");
+    assert_eq!(identity.acadsharp_version, "3.7.1");
+}
+
+#[test]
+fn a_manifest_that_really_declares_a_field_twice_is_still_refused() {
+    let json = r#"{
+  "artifact_version": "3.7.1-viprs.1",
+  "artifact_version": "9.9.9-viprs.9",
+  "acadsharp_version": "3.7.1"
+}"#;
+    let message = common::refusal("a manifest declaring artifact_version twice", || {
+        let _ = compat::ArchiveIdentity::from_manifest_text(json, &fake_manifest_path());
+    });
+    assert!(
+        message.contains("artifact_version"),
+        "the refusal has to name the field that is said twice, and it said: {message}"
+    );
+}
+
 #[test]
 fn a_manifest_with_no_artifact_version_is_refused_rather_than_defaulted() {
     let message = common::refusal("a manifest missing artifact_version", || {
@@ -537,6 +572,128 @@ fn the_archive_on_this_machine_satisfies_the_declaration() {
         REAL_MANIFEST.trim(),
         "the manifest fixture in this test is no longer what the archive ships, so every \
          archive-free job has been checking a file that does not exist any more"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The archive CI actually fetches, against the declaration
+// ---------------------------------------------------------------------------
+//
+// Everything above this line meets the pin through a downloaded archive, which
+// means it only ever runs in the two jobs that download one, and it means a pin
+// that never moved looks exactly like a pin that did. Drop `3.7.1` out of
+// `acadsharp_versions` and every job carries on proving things about the
+// library it fetched while the crate claims a different one.
+//
+// So the tag and the declaration meet here as two strings in two committed
+// files. No network, no archive, and it runs in every job.
+
+/// The composite action both native jobs use to fetch the pinned archive.
+const FETCH_ACTION: &str = ".github/actions/fetch-native-archive/action.yml";
+
+/// The release tag is `acadsharp-<artifact_version>`, which is how the two
+/// files are comparable at all.
+const RELEASE_TAG_PREFIX: &str = "acadsharp-";
+
+/// The `release` input's default out of the fetch action.
+///
+/// A four-line reader rather than a YAML dependency, and it refuses every shape
+/// it was not written for: exactly one `release:` key under `inputs:`, exactly
+/// one `default:` inside it. A reader that guessed would be a test that keeps
+/// passing after somebody restructures the file, which is the one failure a pin
+/// check cannot afford.
+fn pinned_release_tag() -> String {
+    let path = repo_root().join(FETCH_ACTION);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("I could not read {}: {e}", path.display()));
+
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    let lines: Vec<&str> = text.lines().collect();
+
+    let heads: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| indent(line) == 2 && line.trim() == "release:")
+        .map(|(number, _)| number)
+        .collect();
+    assert_eq!(
+        heads.len(),
+        1,
+        "{} has {} `release:` keys and this reader wants exactly one",
+        path.display(),
+        heads.len()
+    );
+
+    let mut defaults: Vec<&str> = Vec::new();
+    for line in lines.iter().skip(heads[0] + 1) {
+        if !line.trim().is_empty() && indent(line) <= 2 {
+            break;
+        }
+        if let Some(value) = line.trim().strip_prefix("default:") {
+            defaults.push(value.trim());
+        }
+    }
+    assert_eq!(
+        defaults.len(),
+        1,
+        "the `release` input in {} has {} defaults and this reader wants exactly one",
+        path.display(),
+        defaults.len()
+    );
+
+    let tag = defaults[0].trim_matches('"').trim_matches('\'').to_string();
+    assert!(
+        !tag.is_empty(),
+        "the `release` input in {} has an empty default, which would fetch nothing",
+        path.display()
+    );
+    tag
+}
+
+#[test]
+fn the_release_ci_pins_is_an_artifact_version_the_declaration_accepts() {
+    let declared = declaration();
+    let tag = pinned_release_tag();
+    let artifact_version = tag.strip_prefix(RELEASE_TAG_PREFIX).unwrap_or_else(|| {
+        panic!(
+            "the release {tag:?} pinned in {FETCH_ACTION} is not spelled \
+             `{RELEASE_TAG_PREFIX}<artifact_version>`, and that spelling is the only thing that \
+             makes it comparable with COMPAT.toml's glob"
+        )
+    });
+    assert!(
+        compat::glob_matches(&declared.native_artifact_versions, artifact_version),
+        "CI fetches {tag:?}, so every native job proves things about the archive \
+         {artifact_version:?}, and COMPAT.toml says `native_artifact_versions = {:?}`, which \
+         refuses it. One of the two moved without the other. Until they agree, the build refuses \
+         the archive its own CI downloads.",
+        declared.native_artifact_versions
+    );
+}
+
+#[test]
+fn the_release_ci_pins_is_built_from_a_listed_acadsharp_version() {
+    let declared = declaration();
+    let tag = pinned_release_tag();
+    let artifact_version = tag
+        .strip_prefix(RELEASE_TAG_PREFIX)
+        .expect("checked in the test above");
+    let upstream = artifact_version
+        .split_once("-viprs.")
+        .map(|(upstream, _)| upstream)
+        .unwrap_or_else(|| {
+            panic!(
+                "the artifact version {artifact_version:?} in {FETCH_ACTION} has no `-viprs.` in \
+                 it, so I cannot tell which upstream ACadSharp it was built from"
+            )
+        });
+    assert!(
+        declared.acadsharp_versions.iter().any(|v| v == upstream),
+        "CI fetches an archive built from ACadSharp {upstream:?} and COMPAT.toml lists \
+         `acadsharp_versions = {:?}`. Dropping a version out of that list while CI still fetches \
+         it is the quiet half of this mistake: every job carries on proving things about the \
+         library it downloaded, and the crate claims a different one.",
+        declared.acadsharp_versions
     );
 }
 
