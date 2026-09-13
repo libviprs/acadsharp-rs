@@ -1,11 +1,13 @@
 name: CI
 
 # The Rust gate for this repo, following the conventions the core `libviprs`
-# crate settled on, minus everything that ties that repo to `libviprs-tests`.
-# There is no counterpart clone, no sibling checkout and no integration job
-# here: this crate's only cross-repo relationship is the native artifact it
-# links, which arrives as a published release rather than as a sibling working
-# tree.
+# crate settled on. Four of the five jobs are that gate. The fifth is the
+# cross-repo one, and it pins rather than guesses: `Suite (acadsharp-rs-tests)`
+# fetches the sibling suite at exactly the sha in SUITE_REV, never a same-named
+# branch and never a fallback to the default branch, which is what `libviprs`'
+# integration job does and what libviprs#1013 is open about. The other
+# cross-repo relationship, the native artifact this crate links, arrives as a
+# published release rather than as a sibling working tree.
 #
 # Jobs, all intended to be required checks on `main` once there is something to
 # require them against:
@@ -13,6 +15,7 @@ name: CI
 #   2. MSRV          the declared floor, actually installed and checked
 #   3. Docs          rustdoc with the warn-by-default link lints denied
 #   4. Test          the suite
+#   5. Suite (acadsharp-rs-tests)  the sibling suite at the pinned SUITE_REV
 
 on:
   # A `push` run builds the branch head. It needs no merge commit, so it is
@@ -147,13 +150,6 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     env:
-      # The pinned native release, the archive inside it and that archive's
-      # sha256, all in one place so the cache key, the download and the
-      # verification cannot drift apart. Moving the pin means moving these
-      # three lines together.
-      ACADSHARP_RELEASE: acadsharp-3.7.1-viprs.1
-      ACADSHARP_ARCHIVE: acadsharp-linux-x64.tgz
-      ACADSHARP_ARCHIVE_SHA256: 4cbdbbdd03c4431780ddca80a1d660e6940ff561734d666e162d6fb50438136e
       # This job exists to call the native library, and says so here rather
       # than in a step. `tests/native_lane_is_live.rs` reads it and fails when
       # the cfg is absent, whatever `ACADSHARP_NATIVE_DIR` ended up as.
@@ -173,52 +169,208 @@ jobs:
 
       # Everything that calls the native library is `cfg(acadsharp_linked)`,
       # which only appears when the build script found an archive. So without
-      # these three steps this job runs zero native tests and goes green, and a
-      # skipped lane is the same colour as a passing one. `tests/
-      # native_lane_is_live.rs` is the backstop: it fails when
-      # ACADSHARP_NATIVE_DIR is set and the cfg is not, so a fetch that
-      # silently produced nothing cannot pass by having run nothing.
-      - name: Cache the pinned native archive
-        id: native-archive-cache
-        uses: actions/cache@v4
-        with:
-          path: native-archive
-          key: acadsharp-${{ env.ACADSHARP_ARCHIVE }}-${{ env.ACADSHARP_ARCHIVE_SHA256 }}
-
-      - name: Download the pinned native archive
-        if: steps.native-archive-cache.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p native-archive
-          curl -fsSL --retry 3 -o "native-archive/$ACADSHARP_ARCHIVE" \
-            "https://github.com/libviprs/libviprs-dep/releases/download/$ACADSHARP_RELEASE/$ACADSHARP_ARCHIVE"
-
-      # Deliberately outside the `if` above, so a cache entry that came back
-      # wrong is caught rather than trusted for being local.
-      - name: Verify and unpack the native archive
-        run: |
-          set -euo pipefail
-          echo "$ACADSHARP_ARCHIVE_SHA256  native-archive/$ACADSHARP_ARCHIVE" | sha256sum -c -
-          rm -rf native-archive/unpacked
-          mkdir -p native-archive/unpacked
-          tar -xzf "native-archive/$ACADSHARP_ARCHIVE" -C native-archive/unpacked
-          # Every top-level entry, deduplicated, rather than the first line of
-          # the listing. `tar | head -1` looks obvious and is wrong here: head
-          # closes the pipe, tar dies on the write, and `pipefail` turns that
-          # into a failed step with nothing but "tar: stdout: write error" to
-          # go on. Reading the whole listing also gets me a check worth having,
-          # that the archive unpacks into exactly one directory.
-          top=$(tar -tzf "native-archive/$ACADSHARP_ARCHIVE" | cut -d/ -f1 | sort -u)
-          test "$(printf '%s\n' "$top" | wc -l)" -eq 1 || {
-            echo "::error::the archive has more than one top-level entry: $top"; exit 1; }
-          root="$PWD/native-archive/unpacked/$top"
-          # The build script wants exactly these two, and reports a warning
-          # rather than an error when it cannot find them, so the job checks
-          # here instead of reading build output.
-          test -d "$root/lib" || { echo "::error::$root has no lib/"; exit 1; }
-          test -f "$root/metadata/LINKINFO.json" || { echo "::error::$root has no metadata/LINKINFO.json"; exit 1; }
-          echo "ACADSHARP_NATIVE_DIR=$root" >> "$GITHUB_ENV"
+      # the archive this job runs zero native tests and goes green, and a
+      # skipped lane is the same colour as a passing one. The pin, the download,
+      # the digest check and the unpack live in the composite action because
+      # `Suite (acadsharp-rs-tests)` needs exactly the same ones, and two copies
+      # of a pin drift. `tests/native_lane_is_live.rs` is the backstop, and the
+      # `ACADSHARP_REQUIRE_NATIVE` above is the half a step edit cannot lose.
+      - name: Fetch the pinned native archive
+        uses: ./.github/actions/fetch-native-archive
 
       - run: cargo test --all-targets
       # `--all-targets` skips doctests, so they need their own line or the
       # examples in the public API documentation are compiled by nothing.
       - run: cargo test --doc
+
+  suite:
+    # The crate side of the cross-repo pin, and the direction `libviprs` does
+    # not have: a crate PR runs the sibling suite against its own tree before it
+    # merges, so an API change cannot land green here and red there.
+    #
+    # Deliberately plain, like `MSRV` and `Docs` above, and for the same reason:
+    # a version or a sha in a required check's name means the next bump renames
+    # the context, the old name stays required, and every PR blocks until
+    # somebody edits branch protection (libviprs#1011, libviprs-cli#57).
+    #
+    # This job carries no conditional and swallows no failure, on purpose. A
+    # skipped check is the same colour as a passing one, and a job that can go
+    # green having tested nothing is worth less than no job at all.
+    name: Suite (acadsharp-rs-tests)
+    runs-on: ubuntu-latest
+    env:
+      # `gh api` wants a token even for a public repo's compare endpoint.
+      GH_TOKEN: ${{ github.token }}
+      SUITE_REPO: ${{ github.repository_owner }}/acadsharp-rs-tests
+    steps:
+      # Two sibling checkouts under the workspace, because the suite depends on
+      # this crate as `{ path = "../acadsharp-rs" }`. That makes the parent of
+      # the suite checkout the directory that has to hold `acadsharp-rs/`, so
+      # neither of them can sit at the workspace root.
+      - uses: actions/checkout@v4
+        with:
+          path: acadsharp-rs
+
+      - name: Read SUITE_REV
+        id: pin
+        working-directory: acadsharp-rs
+        run: |
+          set -euo pipefail
+          # The first line that is neither blank nor a comment, in one awk
+          # rather than a `grep | head` pipeline: with `pipefail` set, head
+          # closing the pipe can kill grep and turn a fine read into a failed
+          # step. `tests/suite_pin_check.rs` applies the same rule from Rust.
+          rev="$(awk 'NF == 0 { next } $1 ~ /^#/ { next } { print $1; exit }' SUITE_REV)"
+          # 40 lowercase hex, matched in bash so there is no second pipeline to
+          # get wrong. A branch name is never allowed here: guessing one is
+          # exactly what libviprs#1013 is open about.
+          case "$rev" in
+            "" | *[!0-9a-f]*)
+              echo "::error file=SUITE_REV::SUITE_REV must hold one 40-character lowercase sha, and its first non-comment line is '$rev'"
+              exit 1
+              ;;
+          esac
+          if [ "${#rev}" -ne 40 ]; then
+            echo "::error file=SUITE_REV::SUITE_REV must hold one 40-character lowercase sha, and '$rev' is ${#rev} characters"
+            exit 1
+          fi
+          echo "Pinned acadsharp-rs-tests revision: $rev"
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch acadsharp-rs-tests at exactly SUITE_REV
+        env:
+          SUITE_REV: ${{ steps.pin.outputs.rev }}
+        run: |
+          set -euo pipefail
+          dest="${GITHUB_WORKSPACE}/acadsharp-rs-tests"
+          mkdir -p "$dest"
+          git -C "$dest" init -q
+          git -C "$dest" remote add origin "https://github.com/${SUITE_REPO}.git"
+          # One sha, fetched as a sha. No branch name, no default-branch
+          # fallback, and a fetch that cannot find it is the end of the job.
+          if ! git -C "$dest" fetch --depth 1 origin "$SUITE_REV"; then
+            echo "::error file=SUITE_REV::could not fetch $SUITE_REPO at $SUITE_REV. Either that sha does not exist there or it is not reachable from any ref. There is no fallback branch here on purpose."
+            exit 1
+          fi
+          git -C "$dest" checkout -q FETCH_HEAD
+          got="$(git -C "$dest" rev-parse HEAD)"
+          if [ "$got" != "$SUITE_REV" ]; then
+            echo "::error file=SUITE_REV::asked for $SUITE_REV and the checkout is at $got"
+            exit 1
+          fi
+          echo "Checked out $SUITE_REPO at $got"
+
+      - name: SUITE_REV obeys the merged-only rule
+        env:
+          SUITE_REV: ${{ steps.pin.outputs.rev }}
+        run: |
+          set -euo pipefail
+          status="$(gh api "repos/$SUITE_REPO/compare/main...$SUITE_REV" --jq .status)"
+          # GITHUB_REF_NAME is already in this step's environment: `main` on a
+          # push to main, `<number>/merge` on a pull_request event, the branch
+          # name otherwise. The script reads it and decides. It lives in a file
+          # because the `main` arm of the rule cannot be rehearsed by pushing a
+          # branch, so `tests/suite_pin_check.rs` drives it instead.
+          acadsharp-rs/tools/suite_pin_check.sh "$status" "$SUITE_REV"
+
+      # Before the resolution check below, because that check is `cargo
+      # metadata` and cargo has to exist first.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: acadsharp-rs-tests
+
+      - name: The pinned suite resolves this crate as a normal path dependency
+        env:
+          SUITE_REV: ${{ steps.pin.outputs.rev }}
+        run: |
+          set -euo pipefail
+          suite="${GITHUB_WORKSPACE}/acadsharp-rs-tests"
+          crate="$(realpath "${GITHUB_WORKSPACE}/acadsharp-rs")"
+          # The suite tests this crate only if it builds against this checkout.
+          # Otherwise it resolves `acadsharp-rs` from somewhere else, or does not
+          # depend on it at all, and a green run says nothing whatsoever about
+          # the PR that produced it. That is the difference between this job and
+          # a decoration.
+          #
+          # Asking cargo rather than grepping the manifest, because a grep proves
+          # the declaration and not the resolution: a `[patch]`, a workspace
+          # member, `optional = true` or the entry sitting under
+          # `[dev-dependencies]` all satisfy a text match and all change what
+          # actually gets built. The suite's own `tests/counterpart_pin.rs`
+          # makes the same three assertions from the other side.
+          #
+          # stdout and stderr go to separate files rather than into one
+          # variable. `meta="$(cargo metadata ... 2>&1)"` reads well and breaks
+          # on every successful run, because cargo's progress lines land on
+          # stderr and jq then chokes on "Updating crates.io index" before it
+          # ever sees a brace. I watched it do exactly that.
+          tmp="$(mktemp -d)"
+          if ! cargo metadata --format-version 1 --manifest-path "$suite/Cargo.toml" \
+            >"$tmp/meta.json" 2>"$tmp/meta.err"; then
+            echo "::error file=SUITE_REV::cargo could not resolve the pinned suite's manifest with this crate beside it:"
+            cat "$tmp/meta.err"
+            exit 1
+          fi
+
+          # 1. A package called acadsharp-rs is in the graph at all.
+          manifest="$(jq -r '[.packages[] | select(.name == "acadsharp-rs") | .manifest_path] | first // empty' "$tmp/meta.json")"
+          if [ -z "$manifest" ]; then
+            echo "::error file=SUITE_REV::the pinned suite does not point back at this crate. cargo resolved no package called acadsharp-rs from $SUITE_REV, so running its tests would prove nothing about this PR."
+            exit 1
+          fi
+
+          # 2. It is this checkout and not a registry copy or some other tree.
+          #    `source` is null exactly for a path dependency.
+          source="$(jq -r '[.packages[] | select(.name == "acadsharp-rs") | .source] | first' "$tmp/meta.json")"
+          if [ "$source" != "null" ]; then
+            echo "::error file=SUITE_REV::the pinned suite resolves acadsharp-rs from $source rather than from this checkout, so its tests are not about this PR."
+            exit 1
+          fi
+          if [ "$(realpath "$manifest")" != "$crate/Cargo.toml" ]; then
+            echo "::error file=SUITE_REV::the pinned suite resolves acadsharp-rs at $(realpath "$manifest") and this PR's checkout is $crate, so its tests are about some other tree."
+            exit 1
+          fi
+
+          # 3. It is a normal dependency. A dev-dependency or an optional one
+          #    that is off still shows up in `packages` above, and still passes
+          #    a grep, while an ordinary build of the suite links none of it.
+          #    `dep_kinds` spells a normal dependency as a null kind.
+          root="$(jq -r '.resolve.root' "$tmp/meta.json")"
+          kinds="$(jq -c --arg root "$root" '[.resolve.nodes[] | select(.id == $root) | .deps[] | select(.name == "acadsharp_rs") | .dep_kinds] | first // empty' "$tmp/meta.json")"
+          if [ -z "$kinds" ]; then
+            echo "::error file=SUITE_REV::cargo resolved acadsharp-rs but the pinned suite's own package does not depend on it, so nothing it builds reaches this crate."
+            exit 1
+          fi
+          if ! printf '%s' "$kinds" | jq -e 'any(.[]; .kind == null)' >/dev/null; then
+            echo "::error file=SUITE_REV::acadsharp-rs has to be a normal dependency of the pinned suite, and cargo says it is $kinds."
+            exit 1
+          fi
+          echo "The pinned suite depends on this checkout ($crate) as a normal path dependency, so its tests are about this tree."
+
+      # Without this the suite runs its non-native subset and goes green having
+      # compiled every native test out, which is the same colour as a pass. The
+      # crate's own `tests/native_lane_is_live.rs` guard cannot see over the
+      # repo boundary, so the archive has to be here before the suite builds.
+      # The steps live in a composite action because `Test` needs exactly the
+      # same three and the pin has to move in one place.
+      - name: Fetch the pinned native archive
+        uses: ./acadsharp-rs/.github/actions/fetch-native-archive
+
+      - name: Run the pinned suite against this PR's tree
+        working-directory: acadsharp-rs-tests
+        env:
+          # The suite's own pin test asserts the sibling sits at the suite's
+          # COUNTERPART_REV. Here it deliberately does not: the sibling is this
+          # PR, which is the whole point. `github.sha` is what actions/checkout
+          # laid down in `acadsharp-rs/` for both events this workflow fires on
+          # (the branch head on `push`, the merge commit on `pull_request`), so
+          # it is the sha the suite should be told to expect, rather than
+          # `github.event.pull_request.head.sha`, which is not what is on disk.
+          VIPRS_REQUIRE_COUNTERPART: 1
+          VIPRS_COUNTERPART_EXPECTED_SHA: ${{ github.sha }}
+        # The workflow-level `RUSTFLAGS: -Dwarnings` reaches this too. That
+        # matches what the suite's own CI sets, so the suite is held to the same
+        # bar here as it is at home and this job cannot red on a warning its own
+        # repo tolerates.
+        run: cargo test --all-targets

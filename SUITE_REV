@@ -1,0 +1,37 @@
+# Pinned revision of the cross-repo counterpart in the other direction:
+# libviprs/acadsharp-rs-tests, the suite that exercises this crate through
+# `acadsharp-rs = { path = "../acadsharp-rs" }`.
+#
+# The `Suite (acadsharp-rs-tests)` job in .github/workflows/ci.yml lays that
+# suite down beside this checkout at exactly this commit and runs it against
+# the tree the PR is proposing. It fetches one sha. It never guesses a
+# same-named branch and never falls back to the default branch, which is what
+# `libviprs`' integration job does and what libviprs#1013 is open about.
+#
+# Shape: comment lines, then exactly one 40-character lowercase sha, and
+# nothing else. The first non-comment, non-blank line is authoritative, so a
+# sha quoted inside a comment is never picked up by mistake. A branch name here
+# is always wrong. `tests/suite_pin_check.rs` asserts all of that.
+#
+# The rule for which commit may go here is the mirror of the suite's own
+# COUNTERPART_REV rule, and it is deliberately looser in one direction:
+#
+#   - On a PR branch, this may name a suite commit that is not on the suite's
+#     `main` (the head of an open suite PR). A breaking crate change needs the
+#     matching suite change to exist before either side can merge, so forbidding
+#     it would make paired changes impossible. The job prints a `::notice`.
+#   - On `main`, that same pin fails the job. A red `Suite (acadsharp-rs-tests)`
+#     on `main` means exactly one thing: the one-line follow-up PR that moves
+#     this file onto the suite's merge commit is owed. The landing order for a
+#     paired change is written out in README.md.
+#
+# To bump: set this to an acadsharp-rs-tests commit sha and say why in a comment
+# above, the way this one does.
+#
+# The merge commit of libviprs/acadsharp-rs-tests#16 (H1.1), landed 2026-09-13.
+# That is the commit where the suite grew `acadsharp-rs = { path =
+# "../acadsharp-rs" }`, its own `COUNTERPART_REV`, the `clone-counterpart`
+# action and `tests/counterpart_pin.rs`, so it is the first suite commit this
+# job can do real work against. `compare/main...` reads `identical` today, so
+# the merged-only rule passes here and would pass on `main` too.
+e31863f4778d85e891343b6457093ca03663dc23
