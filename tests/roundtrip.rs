@@ -442,6 +442,72 @@ fn a_non_finite_extent_is_not_refused() {
 }
 
 #[test]
+fn a_non_finite_extent_has_no_usable_bounds() {
+    // The half of the test above I stopped one assertion short of. Carrying
+    // the bytes verbatim is right; calling the box that comes out of them
+    // usable is not. `NaN > NaN` is false, so the "no usable extents" branch
+    // never fires and a caller unioning view boxes to pick a viewport gets one
+    // NaN that poisons every comparison after it.
+    for extents in [
+        [f64::NAN, 0.0, 10.0, 10.0],
+        [0.0, 0.0, f64::NAN, 10.0],
+        [f64::NAN, f64::NAN, f64::NAN, f64::NAN],
+        [f64::NEG_INFINITY, 0.0, f64::INFINITY, 10.0],
+    ] {
+        let record = common::view_begin(0, 0, extents, 0, "Odd");
+        match read_one(&Builder::new().record(record).build()) {
+            Record::ViewBegin(v) => {
+                // The bytes still cross verbatim. That part was always right.
+                assert_eq!(
+                    v.extents.map(f64::to_bits),
+                    extents.map(f64::to_bits),
+                    "the extents carry the wire's bytes whatever they are"
+                );
+                assert!(
+                    v.bounds.is_none(),
+                    "a non-finite extent is not a usable box, got {:?} from {extents:?}",
+                    v.bounds
+                );
+            }
+            other => panic!("expected a ViewBegin, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_finite_right_way_round_box_still_has_bounds() {
+    // The positive control. A rule that answered `None` to everything would
+    // satisfy the test above and break every real view.
+    let record = common::view_begin(0, 0, [-1.0, -2.0, 3.0, 4.0], 0, "Real");
+    match read_one(&Builder::new().record(record).build()) {
+        Record::ViewBegin(v) => {
+            let b = v.bounds.expect("a finite box the right way round is usable");
+            assert_eq!(b.min_x, -1.0);
+            assert_eq!(b.min_y, -2.0);
+            assert_eq!(b.max_x, 3.0);
+            assert_eq!(b.max_y, 4.0);
+        }
+        other => panic!("expected a ViewBegin, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_upside_down_box_has_no_bounds_either() {
+    // min_x <= max_x is only half the box. A y range the wrong way round is
+    // the same kind of not-a-rectangle, and the inverted box the producer
+    // writes gets both wrong at once.
+    let record = common::view_begin(0, 0, [0.0, 10.0, 10.0, -10.0], 0, "Flipped");
+    match read_one(&Builder::new().record(record).build()) {
+        Record::ViewBegin(v) => assert!(
+            v.bounds.is_none(),
+            "min_y > max_y is not a rectangle either, got {:?}",
+            v.bounds
+        ),
+        other => panic!("expected a ViewBegin, got {other:?}"),
+    }
+}
+
+#[test]
 fn the_iteration_budget_allows_every_minimum_sized_record() {
     // `payload_length / 8 + 1` is exactly enough for a batch of nothing but
     // eight byte records. A budget one short would refuse this legal batch.
