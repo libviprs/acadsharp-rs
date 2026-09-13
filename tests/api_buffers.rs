@@ -99,14 +99,22 @@ fn a_batch_past_the_crate_side_ceiling_is_a_typed_refusal_and_not_an_allocation(
         stream.next().map(|item| item.map(|i| i.record_type())),
         Some(Ok(1))
     );
-    assert_eq!(
-        stream.next(),
-        Some(Err(Error::BatchTooLarge {
-            required: 84,
-            max_batch_bytes: 64,
-        })),
-        "the refusal names both numbers, because a caller can only act on it by raising one"
-    );
+    // Matched rather than built: `BatchTooLarge` is `#[non_exhaustive]`, so a
+    // consumer reads it and never constructs one. Both numbers are still
+    // asserted, because a caller can only act on this by raising one of them.
+    let refusal = stream
+        .next()
+        .expect("a second item")
+        .expect_err("it is a refusal");
+    let Error::BatchTooLarge {
+        required,
+        max_batch_bytes,
+        ..
+    } = refusal
+    else {
+        panic!("a batch past the ceiling is BatchTooLarge, got {refusal:?}");
+    };
+    assert_eq!((required, max_batch_bytes), (84, 64));
     assert_eq!(
         stream.next(),
         None,

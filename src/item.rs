@@ -27,6 +27,22 @@
 //! the zero-copy layer underneath and stays available for a caller who wants
 //! to walk bytes they already hold.
 
+//! # These structs grow fields, and say so
+//!
+//! Every payload struct here is `#[non_exhaustive]`. The wire has already done
+//! this once: WIRE.md says version 2's `Polyline` is thirty two bytes longer
+//! than version 1's. So field growth is what this format's evolution looks
+//! like, it is designed to be non-breaking, and an exhaustive destructure from
+//! outside this crate would turn it into a breaking release. The crate makes
+//! exactly this argument for [`crate::Capabilities`], which answers it with
+//! accessors; here the fields stay public and read-only construction is what
+//! moves.
+//!
+//! Nothing in this crate hands out a half-built one, so the cost lands on a
+//! consumer writing their own test. [`Default`] is the answer for the seven
+//! geometry structs and [`Warning::new`] for the eighth: build one, set the
+//! fields you care about, and a field added later leaves your test compiling.
+
 use core::fmt;
 
 use crate::View;
@@ -69,6 +85,7 @@ impl fmt::Display for ItemHandle {
 /// One struct rather than the same two fields repeated on eight types, which
 /// is also how the sixteen byte geometry prologue is shaped on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct Origin {
     /// The entity that produced this record, if the file had a handle for it.
     pub item_handle: Option<ItemHandle>,
@@ -87,7 +104,8 @@ impl From<batch::Prologue> for Origin {
 }
 
 /// Two endpoints.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
 pub struct Line {
     /// Where this came from.
     pub origin: Origin,
@@ -98,7 +116,8 @@ pub struct Line {
 }
 
 /// A vertex run, open or closed, with a normal and a bulge per span.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
 pub struct Polyline {
     /// Where this came from.
     pub origin: Origin,
@@ -118,7 +137,8 @@ pub struct Polyline {
 }
 
 /// Centre, radius, and a start and end angle in the plane the normal defines.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
 pub struct Arc {
     /// Where this came from.
     pub origin: Origin,
@@ -136,7 +156,8 @@ pub struct Arc {
 }
 
 /// Centre, radius, and a normal.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
 pub struct Circle {
     /// Where this came from.
     pub origin: Origin,
@@ -149,7 +170,8 @@ pub struct Circle {
 }
 
 /// Centre, major axis, minor-to-major ratio and a parameter range.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
 pub struct Ellipse {
     /// Where this came from.
     pub origin: Origin,
@@ -168,7 +190,8 @@ pub struct Ellipse {
 }
 
 /// Degree, knots, control points and weights, untessellated.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
 pub struct Spline {
     /// Where this came from.
     pub origin: Origin,
@@ -214,7 +237,8 @@ impl Spline {
 }
 
 /// A position, a height, a rotation and the drawing's own text.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
 pub struct Text {
     /// Where this came from.
     pub origin: Origin,
@@ -379,6 +403,7 @@ impl fmt::Display for WarningCode {
 /// fully represent. They arrive inline in the stream rather than through a
 /// side channel, because reading one often means reading what sits beside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Warning {
     /// What kind of warning this is.
     pub code: WarningCode,
@@ -389,6 +414,31 @@ pub struct Warning {
     /// The entity this is about, or `None` when it is about the document or
     /// the view.
     pub entity: Option<ItemHandle>,
+}
+
+impl Warning {
+    /// A warning about the document or the view.
+    ///
+    /// `entity` is a public field, so set it afterwards for one about a
+    /// specific entity. This exists because [`Warning`] is
+    /// `#[non_exhaustive]` and [`WarningCode`] has no sensible default, so
+    /// there is otherwise no way for a consumer's own test to produce one.
+    ///
+    /// ```
+    /// use acadsharp_rs::{ItemHandle, Warning, WarningCode};
+    ///
+    /// let mut warning = Warning::new(WarningCode::EMPTY_VIEW, "nothing in it");
+    /// warning.entity = Some(ItemHandle::new(42));
+    /// assert_eq!(warning.code, WarningCode::EMPTY_VIEW);
+    /// ```
+    #[must_use]
+    pub fn new(code: WarningCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            entity: None,
+        }
+    }
 }
 
 /// One thing out of the decode stream.

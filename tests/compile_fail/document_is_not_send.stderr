@@ -1,10 +1,10 @@
-error[E0277]: `*mut viprs_acad_handle` cannot be sent between threads safely
+error[E0277]: `*mut acadsharp_rs::ffi::viprs_acad_handle` cannot be sent between threads safely
  --> tests/compile_fail/document_is_not_send.rs:4:19
   |
 4 |     assert_send::<acadsharp_rs::Document>();
-  |                   ^^^^^^^^^^^^^^^^^^^^^^ `*mut viprs_acad_handle` cannot be sent between threads safely
+  |                   ^^^^^^^^^^^^^^^^^^^^^^ `*mut acadsharp_rs::ffi::viprs_acad_handle` cannot be sent between threads safely
   |
-  = help: within `Document`, the trait `Send` is not implemented for `*mut viprs_acad_handle`
+  = help: within `Document`, the trait `Send` is not implemented for `*mut acadsharp_rs::ffi::viprs_acad_handle`
 note: required because it appears within the type `acadsharp_rs::sys::DocumentHandle`
  --> src/sys.rs
   |

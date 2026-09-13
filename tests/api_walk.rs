@@ -358,13 +358,18 @@ fn a_drawing_this_build_cannot_read_is_refused_with_the_range_to_look_at() {
         .map(|document| document.view_count());
     let error = outcome.expect_err("that is not a drawing");
     println!("opening nonsense bytes gives {error}");
+    let acadsharp_rs::Error::UnsupportedFormat {
+        dwg_version_min,
+        dwg_version_max,
+        ..
+    } = error
+    else {
+        panic!("nonsense bytes are UnsupportedFormat, got {error:?}");
+    };
     assert_eq!(
-        error,
-        acadsharp_rs::Error::UnsupportedFormat {
-            dwg_version_min: 1014,
-            dwg_version_max: 1032,
-        },
-        "and the refusal carries the range the caller is told to look at, rather than making \
-         them go and ask a second time"
+        (dwg_version_min, dwg_version_max),
+        (1014, 1032),
+        "the refusal carries the range the caller is told to look at, rather than making them \
+         go and ask a second time"
     );
 }

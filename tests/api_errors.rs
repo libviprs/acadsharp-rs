@@ -38,27 +38,50 @@ fn every_code_the_header_declares_maps_to_something_better_than_native() {
 
 #[test]
 fn the_code_table_is_exactly_this() {
-    let cases: [(u32, Error); 8] = [
-        (1, Error::InvalidArgument),
+    // A predicate per row rather than a value, because `UnsupportedFormat` is
+    // `#[non_exhaustive]` and a test outside this crate cannot build one. The
+    // row for it still names both of its fields and checks both numbers, so it
+    // is the same assertion wearing a different shape.
+    /// The code, whether a mapped error is the right one, and its name.
+    type Row = (u32, fn(&Error) -> bool, &'static str);
+
+    let cases: [Row; 8] = [
+        (
+            1,
+            |e| matches!(e, Error::InvalidArgument),
+            "InvalidArgument",
+        ),
         (
             2,
-            Error::UnsupportedFormat {
-                dwg_version_min: 1014,
-                dwg_version_max: 1032,
+            |e| {
+                matches!(
+                    e,
+                    Error::UnsupportedFormat {
+                        dwg_version_min,
+                        dwg_version_max,
+                        ..
+                    } if (*dwg_version_min, *dwg_version_max) == DWG
+                )
             },
+            "UnsupportedFormat carrying the drawing range",
         ),
-        (3, Error::CorruptInput),
-        (4, Error::UnsupportedEntity),
-        (5, Error::OutOfMemory),
-        (6, Error::Cancelled),
-        (8, Error::AbiMismatch),
-        (9, Error::LimitExceeded),
+        (3, |e| matches!(e, Error::CorruptInput), "CorruptInput"),
+        (
+            4,
+            |e| matches!(e, Error::UnsupportedEntity),
+            "UnsupportedEntity",
+        ),
+        (5, |e| matches!(e, Error::OutOfMemory), "OutOfMemory"),
+        (6, |e| matches!(e, Error::Cancelled), "Cancelled"),
+        (8, |e| matches!(e, Error::AbiMismatch), "AbiMismatch"),
+        (9, |e| matches!(e, Error::LimitExceeded), "LimitExceeded"),
     ];
-    for (code, want) in cases {
-        assert_eq!(
-            Error::from_native_code(code, DWG.0, DWG.1),
-            Some(want.clone()),
-            "code {code} should map to {want:?}"
+    for (code, is_it, name) in cases {
+        let mapped = Error::from_native_code(code, DWG.0, DWG.1)
+            .unwrap_or_else(|| panic!("code {code} should map to {name} and mapped to success"));
+        assert!(
+            is_it(&mapped),
+            "code {code} should map to {name}, got {mapped:?}"
         );
     }
 }
@@ -72,6 +95,7 @@ fn an_unsupported_format_carries_the_range_a_caller_is_told_to_look_at() {
     let Some(Error::UnsupportedFormat {
         dwg_version_min,
         dwg_version_max,
+        ..
     }) = Error::from_native_code(2, 1014, 1032)
     else {
         panic!("code 2 is UnsupportedFormat");

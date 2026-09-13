@@ -36,6 +36,13 @@ pub type Result<T, E = Error> = core::result::Result<T, E>;
 /// number but this crate's is not: a code the library adds later deserves a
 /// name here, and adding one should not break a caller who matched on the
 /// names that already existed.
+///
+/// The three variants that carry named fields are `#[non_exhaustive]` too, for
+/// the same reason one layer in. ABI.md's sentence for code 2 is "check
+/// `dwg_version_min` and `dwg_version_max`", and a later revision that adds a
+/// third thing to check should be a field rather than a new variant. So match
+/// them with a trailing `..`, and reach them with
+/// [`Error::from_native_code`] rather than by building one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
@@ -49,6 +56,7 @@ pub enum Error {
     /// this code is "check `dwg_version_min` and `dwg_version_max`", and an
     /// error that makes the caller go back and ask is an error that gets
     /// logged without them.
+    #[non_exhaustive]
     UnsupportedFormat {
         /// The oldest AC10xx drawing version this build reads.
         dwg_version_min: u32,
@@ -93,6 +101,7 @@ pub enum Error {
     /// [`crate::Decoder::with_max_batch_bytes`], or lower
     /// [`crate::Limits::with_max_polyline_points`] so the library never builds
     /// a record that big.
+    #[non_exhaustive]
     BatchTooLarge {
         /// What the library asked for, in bytes.
         required: u64,
@@ -127,6 +136,7 @@ pub enum Error {
     ///
     /// The string is for a person reading a log and is not part of the
     /// contract, so match on the variant and never on the text.
+    #[non_exhaustive]
     Internal {
         /// What went wrong, for a human.
         what: &'static str,
