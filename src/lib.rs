@@ -1,33 +1,44 @@
 //! Safe Rust decoder for DWG, backed by the ACadSharp NativeAOT artifacts
 //! published by [`libviprs-dep`].
 //!
-//! Nothing is implemented yet. This crate exists so the repository's CI
-//! conventions have something real to run against, and so the ABI work in
-//! `libviprs-dep` has a consumer to be conformance-tested from.
+//! The safe API is still being built. What exists today is [`ffi`], the raw
+//! transcription of `viprs_acadsharp.h`, [`batch`], the decoder for the VACB
+//! wire protocol that library writes, and [`abi`], which holds the three
+//! constants that pin this crate to one version of that header and the
+//! handshake that refuses a library built from a different one.
 //!
 //! The boundary this crate owns: it exposes a safe, idiomatic Rust API and
 //! never lets .NET or ACadSharp internals reach its callers.
 //!
+//! # The header is vendored, and the constants are derived from it
+//!
+//! `native/viprs_acadsharp.h` is a byte-for-byte copy of the frozen header,
+//! pinned to the `libviprs-dep` commit named in `native/NATIVE_HEADER_REV` and
+//! hashed in `native/viprs_acadsharp.h.sha256`. The build script refuses to
+//! build if those two disagree.
+//!
+//! [`EXPECTED_ABI_VERSION`], [`EXPECTED_WIRE_VERSION`] and
+//! [`EXPECTED_ABI_FINGERPRINT`] are generated from that file's bytes at build
+//! time. Nobody types them, so nothing in the crate can go on agreeing with a
+//! header that moved. They live in [`abi`] and are re-exported here, because a
+//! leaf module both [`ffi`] and [`batch`] can depend on beats three names at
+//! the root that everything reaches up for. [`batch::WIRE_VERSION`] is the same
+//! number narrowed once to the `u16` the batch header actually carries.
+//!
+//! # Linking the native library
+//!
+//! Point `ACADSHARP_NATIVE_DIR` at an unpacked `libviprs-dep` archive, the
+//! directory holding `lib/` and `metadata/LINKINFO.json`, and the build script
+//! emits the link lines and sets `cfg(acadsharp_linked)`. With no archive the
+//! crate still builds, checks and documents; everything that calls the library
+//! is simply compiled out, which is what [`abi::handshake`] being the one
+//! gated function in here is about. [`batch`] never links: it reads bytes.
+//!
 //! [`libviprs-dep`]: https://github.com/libviprs/libviprs-dep
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-/// The VIPRS CAD ABI version this crate is written against.
-///
-/// The native library exposes the same number through `viprs_acad_abi_version`,
-/// and a mismatch is a hard error rather than something to negotiate at
-/// runtime. Bumping the native ABI without bumping this is the failure the
-/// conformance consumer exists to catch.
-pub const EXPECTED_ABI_VERSION: u32 = 1;
+pub mod abi;
+pub mod batch;
+pub mod ffi;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn abi_version_is_pinned() {
-        // A placeholder that still says something: the constant is the value
-        // the native header will be checked against, so a silent edit to it
-        // should not pass unnoticed once the conformance test lands.
-        assert_eq!(EXPECTED_ABI_VERSION, 1);
-    }
-}
+pub use abi::{EXPECTED_ABI_FINGERPRINT, EXPECTED_ABI_VERSION, EXPECTED_WIRE_VERSION};
