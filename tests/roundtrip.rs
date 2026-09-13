@@ -82,7 +82,7 @@ fn view_begin_fields_round_trip() {
             assert_eq!(v.kind, 0);
             assert_eq!(v.item_count, 12);
             assert_eq!(v.name, "Model");
-            let b = v.bounds.expect("a right way round box is Some");
+            let b = v.bounds().expect("a right way round box is Some");
             assert_eq!(
                 [b.min_x, b.min_y, b.max_x, b.max_y],
                 [-100.25, -50.5, 100.75, 50.125]
@@ -420,7 +420,7 @@ fn inverted_extents_read_as_no_bounds() {
     match read_one(&Builder::new().record(record).build()) {
         Record::ViewBegin(v) => {
             assert!(
-                v.bounds.is_none(),
+                v.bounds().is_none(),
                 "the inverted box is not a rectangle and not a refusal"
             );
             assert_eq!(v.kind, 2);
@@ -464,9 +464,9 @@ fn a_non_finite_extent_has_no_usable_bounds() {
                     "the extents carry the wire's bytes whatever they are"
                 );
                 assert!(
-                    v.bounds.is_none(),
+                    v.bounds().is_none(),
                     "a non-finite extent is not a usable box, got {:?} from {extents:?}",
-                    v.bounds
+                    v.bounds()
                 );
             }
             other => panic!("expected a ViewBegin, got {other:?}"),
@@ -481,7 +481,7 @@ fn a_finite_right_way_round_box_still_has_bounds() {
     let record = common::view_begin(0, 0, [-1.0, -2.0, 3.0, 4.0], 0, "Real");
     match read_one(&Builder::new().record(record).build()) {
         Record::ViewBegin(v) => {
-            let b = v.bounds.expect("a finite box the right way round is usable");
+            let b = v.bounds().expect("a finite box the right way round is usable");
             assert_eq!(b.min_x, -1.0);
             assert_eq!(b.min_y, -2.0);
             assert_eq!(b.max_x, 3.0);
@@ -499,9 +499,9 @@ fn an_upside_down_box_has_no_bounds_either() {
     let record = common::view_begin(0, 0, [0.0, 10.0, 10.0, -10.0], 0, "Flipped");
     match read_one(&Builder::new().record(record).build()) {
         Record::ViewBegin(v) => assert!(
-            v.bounds.is_none(),
+            v.bounds().is_none(),
             "min_y > max_y is not a rectangle either, got {:?}",
-            v.bounds
+            v.bounds()
         ),
         other => panic!("expected a ViewBegin, got {other:?}"),
     }

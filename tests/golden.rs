@@ -49,7 +49,7 @@ fn syn_1v_12p_carries_the_exact_record_sequence_i_verified_by_hand() {
             assert_eq!(v.kind, 0);
             assert_eq!(v.name, "Model");
             assert_eq!(v.item_count, 12);
-            let b = v.bounds.expect("the Model view has a right way round box");
+            let b = v.bounds().expect("the Model view has a right way round box");
             assert_eq!(
                 [b.min_x, b.min_y, b.max_x, b.max_y],
                 [-100.25, -50.5, 100.75, 50.125]

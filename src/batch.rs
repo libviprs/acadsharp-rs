@@ -37,8 +37,8 @@
 //! record types it does not know (skipped by `length`, never by a size table),
 //! and warning codes it does not know. A [`ViewBegin`]'s extents are exempt
 //! from the finiteness rule, and the inverted box a producer writes for a view
-//! with no usable extents comes back as `bounds: None` rather than as a
-//! refusal or as a rectangle.
+//! with no usable extents comes back as [`ViewBegin::bounds`] of [`None`]
+//! rather than as a refusal or as a rectangle.
 //!
 //! # Reading a batch
 //!
@@ -646,6 +646,10 @@ impl Prologue {
 }
 
 /// A view's bounding box, when it has a usable one.
+///
+/// There is no way to build one of these that is not a rectangle:
+/// [`ViewBegin::bounds`] is the only thing that makes one, and it refuses
+/// every non-finite or wrong-way-round extent.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bounds {
     /// Smallest x.
@@ -668,6 +672,11 @@ pub struct DocumentBegin {
 }
 
 /// One view's index, kind, extents, item count and name.
+///
+/// The bounding box is [`ViewBegin::bounds`] rather than a field, because it
+/// is a pure function of `extents` and storing both lets a caller build a
+/// `ViewBegin` whose box contradicts its own extents. Computing it also drops
+/// the struct from 104 bytes to 64.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ViewBegin<'a> {
     /// Which view this is.
@@ -675,17 +684,54 @@ pub struct ViewBegin<'a> {
     /// 0 model, 1 layout, 2 unknown. Left as a number on purpose: a value the
     /// native side adds later must stay representable.
     pub kind: u32,
-    /// The four extent values exactly as the wire carries them, the inverted
-    /// box included. These are exempt from the finiteness rule.
+    /// The four extent values exactly as the wire carries them, in
+    /// `[min_x, min_y, max_x, max_y]` order, the inverted box included. These
+    /// are exempt from the finiteness rule.
     pub extents: [f64; 4],
-    /// The extents as a box, or [`None`] when `min_x > max_x`, which is how a
-    /// producer says this view has no usable bounding box.
-    pub bounds: Option<Bounds>,
     /// Roughly how many items the view holds.
     pub item_count: u64,
     /// The view's name. Not terminated on the wire.
     pub name: &'a str,
 }
+
+impl ViewBegin<'_> {
+    /// The extents as a rectangle, or [`None`] when they are not one.
+    ///
+    /// A producer with no usable extents writes the inverted box, `1e20` in
+    /// both minima and `-1e20` in both maxima, and WIRE.md names `min_x >
+    /// max_x` as the comparison that reads it. That comparison is necessary
+    /// and not sufficient: `NaN > NaN` is false, so a `NaN` extent walks
+    /// straight past it and comes out as a box whose job was to say whether it
+    /// could be used. So this asks for the whole rectangle: four finite
+    /// numbers, `min_x <= max_x` and `min_y <= max_y`. Anything else is
+    /// [`None`], and [`ViewBegin::extents`] still carries the bytes verbatim
+    /// for a caller that wants to see what was there.
+    #[must_use]
+    pub fn bounds(&self) -> Option<Bounds> {
+        let [min_x, min_y, max_x, max_y] = self.extents;
+        if !self.extents.iter().all(|v| v.is_finite()) {
+            return None;
+        }
+        if min_x > max_x || min_y > max_y {
+            return None;
+        }
+        Some(Bounds {
+            min_x,
+            min_y,
+            max_x,
+            max_y,
+        })
+    }
+}
+
+// The whole point of computing the box: the struct is the wire's own fields
+// and nothing else. It was 104 bytes with an `Option<Bounds>` stored beside
+// the extents it is a function of.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(
+    size_of::<ViewBegin<'_>>() == 64,
+    "ViewBegin is the wire's fields and nothing derived from them"
+);
 
 /// Two endpoints.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1211,30 +1257,18 @@ fn decode_view_begin<'a>(p: Fields<'a>, length: u64, at: u64) -> Result<ViewBegi
     }
     // Extents are exempt from the finiteness rule on purpose: they are a box
     // the producer reports rather than a shape anybody draws, and a view
-    // holding nothing has no finite one.
+    // holding nothing has no finite one. Whether they are a rectangle is
+    // `ViewBegin::bounds`'s question, not this one's.
     let extents = [
         f64_at(p, 8, at)?,
         f64_at(p, 16, at)?,
         f64_at(p, 24, at)?,
         f64_at(p, 32, at)?,
     ];
-    // min_x > max_x is how a producer says "no usable extents", which is the
-    // comparison WIRE.md names. It is not a rectangle and it is not a refusal.
-    let bounds = if extents[0] > extents[2] {
-        None
-    } else {
-        Some(Bounds {
-            min_x: extents[0],
-            min_y: extents[1],
-            max_x: extents[2],
-            max_y: extents[3],
-        })
-    };
     Ok(ViewBegin {
         view_index: u32_at(p, 0, at)?,
         kind: u32_at(p, 4, at)?,
         extents,
-        bounds,
         item_count: u64_at(p, 40, at)?,
         name: string_at(p, 56, name_len, at)?,
     })
