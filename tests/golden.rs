@@ -206,7 +206,9 @@ fn the_forward_probe_is_skipped_by_length_and_the_record_after_it_is_read() {
         }
         match &records[at + 1] {
             Record::ViewEnd(_) => {}
-            other => panic!("{name}: the record after the probe should be a ViewEnd, got {other:?}"),
+            other => {
+                panic!("{name}: the record after the probe should be a ViewEnd, got {other:?}")
+            }
         }
     }
 }
@@ -225,11 +227,14 @@ fn every_capture_parses_end_to_end_with_nothing_left_over() {
         let mut seen_batches = 0;
         let mut seen_records = 0;
         while offset < bytes.len() {
-            let batch =
-                BatchReader::new(&bytes[offset..]).unwrap_or_else(|e| panic!("{name} at {offset}: {e}"));
+            let batch = BatchReader::new(&bytes[offset..])
+                .unwrap_or_else(|e| panic!("{name} at {offset}: {e}"));
             assert!(batch.is_last(), "{name}: every capture batch sets bit 0");
             assert_eq!(batch.flags(), 1, "{name}: no other flag bit is set");
-            seen_records += batch.records().map(|r| r.expect("parses")).count();
+            for record in batch.records() {
+                record.unwrap_or_else(|e| panic!("{name} at {offset}: {e}"));
+                seen_records += 1;
+            }
             offset += batch.total_len();
             seen_batches += 1;
         }
@@ -298,8 +303,15 @@ fn every_golden_record_length_is_a_multiple_of_four_and_every_reserved_is_zero()
                     u32::from_le_bytes(payload[pos + 4..pos + 8].try_into().expect("4 bytes"))
                         as usize;
                 assert_eq!(reserved, 0, "{name}: reserved at {pos} is not zero");
-                assert_eq!(length % 4, 0, "{name}: length at {pos} is not a multiple of four");
-                assert!(length >= 8, "{name}: length at {pos} is below its own header");
+                assert_eq!(
+                    length % 4,
+                    0,
+                    "{name}: length at {pos} is not a multiple of four"
+                );
+                assert!(
+                    length >= 8,
+                    "{name}: length at {pos} is below its own header"
+                );
                 pos += length;
             }
             offset += 12 + payload_length;

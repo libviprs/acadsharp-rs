@@ -11,6 +11,8 @@
 //! [`libviprs-dep`]: https://github.com/libviprs/libviprs-dep
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod batch;
+
 /// The VIPRS CAD ABI version this crate is written against.
 ///
 /// The native library exposes the same number through `viprs_acad_abi_version`,
