@@ -21,7 +21,7 @@ used to be two, and the two that were not checked were the two that drift.
 | The header's bytes | `native/viprs_acadsharp.h` | its digest, below |
 | The header's digest | `native/viprs_acadsharp.h.sha256` | `build.rs` refuses a mismatch on every build |
 | Where the header came from | `native/NATIVE_HEADER_REV` | **nothing**, see below |
-| The archive CI fetches | `.github/actions/fetch-native-archive/action.yml` | its own sha256, and now `COMPAT.toml` |
+| The archive CI fetches | `.github/actions/fetch-native-archive/action.yml` | its own sha256, and now `COMPAT.toml`, in every job |
 | The compatibility declaration | `COMPAT.toml` | `build.rs` against the header, and against the archive's manifest |
 
 `README.md`'s compatibility table moves too, and it is generated, so it counts
@@ -82,7 +82,9 @@ archive filename and the archive's sha256 as three input defaults, in one place,
 used by both the `Test` job and the `Suite (acadsharp-rs-tests)` job. Move all
 three together. A tag moved without its digest fails the `sha256sum -c` in the
 action, which is the good failure; a digest moved without its tag fails the same
-way.
+way. A tag moved without step 3 fails `tests/compat.rs`, in every job, because
+the tag is `acadsharp-<artifact_version>` and that is the same string
+`COMPAT.toml` globs over.
 
 Only the Linux x64 archive is pinned, deliberately. The macOS dylib in these
 archives carries an install name (`@rpath/viprs_acadsharp.dylib`) that matches
@@ -104,7 +106,8 @@ it. Practically:
   glob has to move with it.
 - `acadsharp_versions` lists the upstream versions this crate has been run
   against. Add the new one; drop the old one only when nothing is expected to
-  link an old archive any more.
+  link an old archive any more, and never while step 2 still pins one, which
+  `tests/compat.rs` refuses.
 
 Then regenerate the README table, which is a single command:
 
@@ -114,16 +117,30 @@ ACADSHARP_UPDATE_README=1 cargo test --test compat readme
 
 ### What now checks what, in CI
 
-This is the step that used to be unchecked and is not any more. The `Test` and
-`Suite` jobs both unpack the pinned archive and export `ACADSHARP_NATIVE_DIR`
-before building, and the build refuses an archive whose `artifact_version`
-misses the glob or whose `acadsharp_version` is not in the list, naming
-`COMPAT.toml`. So the action's pin and the declaration are now checked against
-each other by every run that links anything: bump one without the other and CI
-goes red with a message saying which two files disagree.
+This is the step that used to be unchecked and is not any more, and it is
+checked twice over.
 
-The archive-free jobs (`Check & Lint`, `MSRV`, `Docs`) have no manifest to read
-and check the first three keys only, which is all they can honestly check.
+Through an archive: the `Test` and `Suite` jobs both unpack the pinned archive
+and export `ACADSHARP_NATIVE_DIR` before building, and the build refuses an
+archive whose `artifact_version` misses the glob or whose `acadsharp_version`
+is not in the list, naming `COMPAT.toml`. The same refusal covers an archive
+found in `$CARGO_HOME/acadsharp-native/...` rather than through the variable,
+because the check hangs off the archive that resolved and not off any one route
+to it.
+
+Through the two files alone: `tests/compat.rs` reads the `release` default out
+of the fetch action, strips the `acadsharp-` off it, and puts the rest through
+the same glob and the same list. No network and no archive, so that one runs in
+every job including the three that never link. It is the check that catches the
+quiet direction of this mistake: drop `3.7.1` out of `acadsharp_versions` while
+CI still fetches a `3.7.1` archive, and without it every job carries on proving
+things about the library it downloaded while the crate claims a different one.
+
+So bump one without the other and CI goes red with a message saying which two
+files disagree.
+
+The archive-free jobs (`Check & Lint`, `MSRV`, `Docs`) have no manifest to read,
+so the two archive keys reach them only through the pinned tag above.
 
 ## Step 4: run the tests and read what moved
 

@@ -46,6 +46,15 @@ The table is generated. `tests/compat.rs` fails when it and `COMPAT.toml`
 disagree, and `ACADSHARP_UPDATE_README=1 cargo test --test compat readme`
 rewrites it.
 
+"When one resolves" in the last two rows means any archive the build script
+finds, whether that is `ACADSHARP_NATIVE_DIR` or the cache under
+`$CARGO_HOME/acadsharp-native/`. The check hangs off the archive rather than off
+a route to it. The same two rows are also checked with no archive at all, by
+reading the release tag CI pins in `.github/actions/fetch-native-archive/action.yml`:
+that tag is `acadsharp-<artifact_version>`, so the pin and the declaration meet
+as two strings in two committed files and a pin that moved without the
+declaration goes red in every job.
+
 The two version numbers are declared there and derived in `build.rs` from the
 header's own bytes, and the build stops when the two disagree. That is the
 other way round from reading the numbers out of the TOML, on purpose: a header
