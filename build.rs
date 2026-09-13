@@ -19,8 +19,13 @@
 //! `serde`, no features, no static recipe. Issue #3 replaces exactly this half
 //! with the real resolver (both link kinds, the `+whole-archive` ordering, the
 //! full manifest under `serde`, and the `link-static` / `link-shared` feature
-//! pair). Everything above the `Archive resolution` banner is this issue's and
-//! stays.
+//! pair).
+//!
+//! The two halves meet in exactly one place, marked `issue #6` inside
+//! `resolve_archive`: the archive half hands the declaration the archive it
+//! resolved, and the declaration says whether this crate will link it. That is
+//! two lines, it reads no environment variable and prints nothing, so issue #3
+//! replaces everything around it without it going too.
 //!
 //! The crate has to build with no archive at all, because `Check & Lint`,
 //! `MSRV` and `Docs` never link one. So a missing archive is a warning and an
@@ -142,46 +147,13 @@ pub const EXPECTED_ABI_FINGERPRINT: u64 = {fingerprint:#018x};
         HEADER,
         COMPAT,
     );
-    // And against the archive, if this build has one. Before `resolve_archive`
-    // rather than inside it, so an archive the declaration does not cover
-    // stops the build before a single link directive is printed, and so that
-    // issue #3 can replace the whole of the archive half below without this
-    // check going with it.
-    check_archive_against_declaration(&declared);
+    // The archive half checks it against the archive, if this build has one,
+    // and it does that down there rather than up here on purpose. See the
+    // comment on `resolve_archive`.
     // --- end issue #6 ------------------------------------------------------
 
-    resolve_archive();
+    resolve_archive(&declared);
 }
-
-// --- issue #6 (H3.4) -------------------------------------------------------
-
-/// Refuses an archive `COMPAT.toml` has not declared this crate compatible
-/// with.
-///
-/// It resolves `ACADSHARP_NATIVE_DIR` itself rather than borrowing whatever
-/// the archive half below found, which is one duplicated `env::var_os` and
-/// buys a clean seam: issue #3 rewrites `resolve_archive` wholesale and this
-/// function is not in it. A missing variable or a missing manifest is silence
-/// here, because the archive half already warns about both and two warnings
-/// for one absent archive reads like two problems.
-fn check_archive_against_declaration(declared: &compat::Compat) {
-    let Some(dir) = std::env::var_os("ACADSHARP_NATIVE_DIR") else {
-        return;
-    };
-    let manifest = PathBuf::from(&dir).join("metadata").join("LINKINFO.json");
-    if !manifest.is_file() {
-        return;
-    }
-    println!("cargo::rerun-if-changed={}", manifest.display());
-    let text = std::fs::read_to_string(&manifest)
-        .unwrap_or_else(|e| panic!("I could not read {}: {e}", manifest.display()));
-    // Issue #3's manifest parser replaces `from_manifest_text`; `check_archive`
-    // takes the two fields as a struct so that swap is a one-line one.
-    let identity = compat::ArchiveIdentity::from_manifest_text(&text, &manifest);
-    declared.check_archive(&identity, &manifest, COMPAT);
-}
-
-// --- end issue #6 ----------------------------------------------------------
 
 fn env_var(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|e| panic!("cargo did not set {name}: {e}"))
@@ -225,13 +197,37 @@ fn u32_define(header: &str, name: &str) -> u32 {
 // ---------------------------------------------------------------------------
 // Archive resolution
 //
-// Issue #3 owns everything below this line and replaces it wholesale. What is
-// here is the least that lets the native tests run: shared linking, one field
-// read out of the manifest, and a cfg so everything that calls the library can
-// compile out when there is no library.
+// Issue #3 owns everything below this line and replaces it wholesale, except
+// the two lines marked `issue #6` inside `resolve_archive`, which are where
+// the declaration meets the archive. What is here is the least that lets the
+// native tests run: shared linking, one field read out of the manifest, and a
+// cfg so everything that calls the library can compile out when there is no
+// library.
 // ---------------------------------------------------------------------------
 
-fn resolve_archive() {
+/// Finds the archive, checks it against the declaration, and prints the lines
+/// that link it.
+///
+/// `declared` is issue #6's and so is the one call it is passed to, marked
+/// below. The check sits inside this function rather than beside it in `main`
+/// because it has to run against **whatever archive resolved**, and it is this
+/// function that decides what that is. Keying it on `ACADSHARP_NATIVE_DIR`
+/// instead, which is what it used to do, is wrong in both directions at once:
+///
+/// - Every other route goes unchecked. Issue #3's resolver also finds an
+///   archive in `$CARGO_HOME/acadsharp-native/...`, and one found there linked
+///   green with `COMPAT.toml` looking at nothing. Measured on a composed tree:
+///   a cached archive declaring `9.9.9-viprs.9` against a declaration of
+///   `3.7.1-viprs.*`, exit 0, with `artifact_version=9.9.9-viprs.9` going out
+///   to every consumer through `cargo::metadata`.
+/// - It reads the variable before this function has canonicalised it and
+///   refused a control character in it. A symlink whose own name carries a
+///   newline resolves to a clean directory, so the guard passed and the
+///   caller's own text was on cargo's stdout as a directive of its own.
+///
+/// So: one resolution, one root that has been through the guard, one manifest
+/// read once, and the declaration checked on the way past.
+fn resolve_archive(declared: &compat::Compat) {
     let Some(dir) = std::env::var_os("ACADSHARP_NATIVE_DIR") else {
         warn_no_archive("ACADSHARP_NATIVE_DIR is unset");
         return;
@@ -261,6 +257,17 @@ fn resolve_archive() {
 
     let text = std::fs::read_to_string(&manifest)
         .unwrap_or_else(|e| panic!("I could not read {}: {e}", manifest.display()));
+
+    // --- issue #6 (H3.4) ---------------------------------------------------
+    // The archive against the declaration, before a single link directive is
+    // printed. Two lines, no environment, no path resolution and nothing
+    // printed: issue #3's parser swaps `from_manifest_text` for its own
+    // `LinkInfo` by building the identity from its two fields, and nothing
+    // else here moves.
+    let identity = compat::ArchiveIdentity::from_manifest_text(&text, &manifest);
+    declared.check_archive(&identity, &manifest, COMPAT);
+    // --- end issue #6 ------------------------------------------------------
+
     let system_libraries = linkinfo::system_libraries(&text, "shared_system_libraries", &manifest);
 
     // Where a downstream build script picks these up, through cargo's `links`
