@@ -6,6 +6,21 @@
 //! friends out of the header's bytes, and `tests/` re-derives the same numbers
 //! to check them, so a parser only one side used would be checked by a copy of
 //! itself.
+//!
+//! It was. The test helper knew what a block comment was and the build script
+//! did not, so a header carrying
+//!
+//! ```c
+//! /* an example from an older revision:
+//! #define VIPRS_ACAD_ABI_VERSION 1u
+//! */
+//! #define VIPRS_ACAD_ABI_VERSION 2u
+//! ```
+//!
+//! generated `EXPECTED_ABI_VERSION = 1`, and every archive-free job stayed
+//! green because the cross-check in `tests/abi_constants.rs` read the header
+//! with a second copy of the same mistake. One parser, used by everyone, is
+//! the fix.
 
 /// Drops every `/* ... */` comment, including the multi-line ones, and leaves
 /// everything else alone.
@@ -49,12 +64,17 @@ pub fn strip_block_comments(source: &str) -> String {
 }
 
 /// Every `#define NAME VALUE` in `source`, in the order they appear, with the
-/// `u` suffix on the value already dropped.
+/// `u` suffix on the value already dropped and every block comment already
+/// gone.
+///
+/// The stripping happens in here rather than at the call sites, because a call
+/// site that forgets is exactly the bug this module exists for.
 ///
 /// Only integer defines are recognised. A define whose value is not a decimal
 /// number is a panic rather than a skip, because a silently skipped line is
 /// how a parser ends up reporting an empty set and passing.
 pub fn integer_defines(source: &str) -> Vec<(String, u64)> {
+    let source = strip_block_comments(source);
     let mut out = Vec::new();
     for line in source.lines() {
         let line = line.trim();
@@ -77,13 +97,28 @@ pub fn integer_defines(source: &str) -> Vec<(String, u64)> {
     out
 }
 
-/// The value of `#define NAME <decimal>` in `source`, where `what` names the
-/// file it came from so a refusal says which one to go and look at.
+/// The one value of `#define NAME <decimal>` in `source`, where `what` names
+/// the file it came from so a refusal says which one to go and look at.
+///
+/// Zero definitions is a refusal, and so is more than one. Taking the first of
+/// two is how the commented-out define above won: the parser found two, kept
+/// the one it met first, and handed it back with no sign that it had thrown
+/// anything away. I would rather not guess which one a C compiler ends up
+/// with, so a header that says a name twice is a header somebody has to fix.
 pub fn integer_define(source: &str, name: &str, what: &str) -> u64 {
-    for (found, value) in integer_defines(source) {
-        if found == name {
-            return value;
-        }
+    let found: Vec<u64> = integer_defines(source)
+        .into_iter()
+        .filter(|(defined, _)| defined == name)
+        .map(|(_, value)| value)
+        .collect();
+
+    match found.as_slice() {
+        [only] => *only,
+        [] => panic!("{what} has no `#define {name}`, so I have nothing to read it from"),
+        several => panic!(
+            "{what} defines `{name}` {} times, with the values {several:?}. Two live definitions \
+             of one name is a header to fix rather than a number to pick.",
+            several.len()
+        ),
     }
-    panic!("{what} has no `#define {name}`, so I have nothing to read it from")
 }

@@ -171,6 +171,12 @@ fn resolve_archive() {
     let lib_dir = root.join("lib");
     let manifest = root.join("metadata").join("LINKINFO.json");
 
+    // Before anything at all is printed, because every line below carries the
+    // root and the one that says "no archive resolved" carries it too. A
+    // newline in `ACADSHARP_NATIVE_DIR` splits whichever line it lands in, and
+    // the second half is a directive the caller chose.
+    linkinfo::check_archive_root(&root, &manifest);
+
     if !lib_dir.is_dir() {
         warn_no_archive(&format!("{} has no lib/ directory", root.display()));
         return;

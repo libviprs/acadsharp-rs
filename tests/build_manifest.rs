@@ -122,3 +122,29 @@ fn every_character_a_library_name_may_not_have_is_refused() {
         );
     }
 }
+
+#[test]
+fn an_archive_root_with_a_newline_in_it_is_refused() {
+    // The same injection one layer out. `ACADSHARP_NATIVE_DIR` reaches cargo
+    // through the link-search line, through the rpath and through the warning
+    // that says no archive resolved, and this is the one that needs no
+    // manifest at all to fire.
+    let root = std::path::PathBuf::from("/tmp/nope\ncargo::rustc-env=PWNED_BY_THE_PATH=yes");
+    let manifest = root.join("metadata").join("LINKINFO.json");
+    let message = common::refusal("a root with a newline in it", || {
+        linkinfo::check_archive_root(&root, &manifest);
+    });
+    assert!(
+        message.contains("LINKINFO.json"),
+        "a refusal has to name the manifest it would have read, and it said: {message}"
+    );
+}
+
+#[test]
+fn an_ordinary_archive_root_is_not_refused() {
+    // The positive control for the check above. A path with a space in it is
+    // a perfectly good path and survives a single directive line, so refusing
+    // it would break somebody's checkout for no reason.
+    let root = std::path::PathBuf::from("/home/someone/My Archives/acadsharp-linux-arm64");
+    linkinfo::check_archive_root(&root, &root.join("metadata").join("LINKINFO.json"));
+}
