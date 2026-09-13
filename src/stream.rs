@@ -626,6 +626,104 @@ mod tests {
         assert!(matches!(error, Error::Internal { .. }), "got {error:?}");
     }
 
+    /// A well formed batch with nothing in it: twelve bytes of frame, a
+    /// `payload_length` of 0, and the last-batch flag clear.
+    fn payload_free_batch() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"VACB");
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn a_run_of_payload_free_batches_is_refused_rather_than_spun_on() {
+        // The shape that used to spin. `written` is 12 so the cursor lands on
+        // the batch length and nothing steps, `done` is 0 so the stream pulls
+        // again, and the pull sets exactly the state it started from. Nothing
+        // here is a failure the latch could catch: every answer is OK.
+        struct Treadmill {
+            calls: usize,
+        }
+
+        /// Far above the bound and far below a spin. A stream with no bound
+        /// blows this in well under a second.
+        const CALL_BUDGET: usize = 64;
+
+        impl BatchSource for Treadmill {
+            fn next_batch(&mut self, buf: &mut [u8]) -> NativeBatch {
+                self.calls += 1;
+                assert!(
+                    self.calls <= CALL_BUDGET,
+                    "the stream has asked for {} batches without a single byte of payload \
+                     coming back, so it is spinning rather than decoding",
+                    self.calls
+                );
+                let bytes = payload_free_batch();
+                buf[..bytes.len()].copy_from_slice(&bytes);
+                NativeBatch {
+                    code: crate::ffi::VIPRS_ACAD_OK,
+                    written: bytes.len() as u64,
+                    done: 0,
+                }
+            }
+        }
+
+        let mut source = Treadmill { calls: 0 };
+        let mut core = core(4096, usize::MAX);
+
+        let error = core
+            .next(&mut source)
+            .expect("a refusal")
+            .expect_err("a library that never makes progress is a broken library");
+        assert!(matches!(error, Error::Internal { .. }), "got {error:?}");
+        assert!(
+            source.calls <= 4,
+            "it asked {} times before giving up, and the bound wants to be small enough that a \
+             spin is impossible and large enough that a padding batch survives",
+            source.calls
+        );
+        assert_eq!(core.next(&mut source), None, "and the refusal latches");
+    }
+
+    #[test]
+    fn a_padding_batch_between_two_real_ones_is_not_a_refusal() {
+        // The bound has to leave room for the legitimate case: a producer that
+        // frames an empty batch and then carries on. One payload is enough to
+        // put the count back to zero, so a padding batch every other batch is
+        // fine forever.
+        let mut source = Scripted::new(vec![
+            Answer::Batch {
+                bytes: payload_free_batch(),
+                done: false,
+            },
+            Answer::Batch {
+                bytes: one_record_batch(2),
+                done: false,
+            },
+            Answer::Batch {
+                bytes: payload_free_batch(),
+                done: false,
+            },
+            Answer::Batch {
+                bytes: one_record_batch(2),
+                done: true,
+            },
+        ]);
+        let mut core = core(4096, usize::MAX);
+
+        let first = core.next(&mut source).expect("an item").expect("it parses");
+        assert_eq!(first.record_type(), 13);
+        let second = core.next(&mut source).expect("an item").expect("it parses");
+        assert_eq!(second.record_type(), 13);
+        assert_eq!(core.next(&mut source), None);
+        assert!(
+            core_is_complete(&core),
+            "two records, and the total says two"
+        );
+    }
+
     #[test]
     fn a_corrupt_batch_arrives_as_a_batch_error_with_its_offset() {
         let mut bytes = one_record_batch(1);
