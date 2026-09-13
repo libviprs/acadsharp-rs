@@ -1,0 +1,98 @@
+name: Fetch the pinned native archive
+description: >-
+  Downloads the pinned libviprs-dep archive, verifies its sha256, unpacks it and
+  exports ACADSHARP_NATIVE_DIR, so every job that wants the native lane gets it
+  the same way and from the same pin.
+
+# Everything that reaches the native library is `cfg(acadsharp_linked)`, which
+# only exists when the build script found an archive. So a job that does not run
+# this action compiles those tests out and goes green having run none of them,
+# and a skipped lane is the same colour as a passing one.
+#
+# Two jobs need that: `Test`, which runs this crate's own native tests, and
+# `Suite (acadsharp-rs-tests)`, which runs the sibling suite against this tree
+# and would otherwise quietly test the sibling's non-native subset forever. The
+# steps live here rather than twice in ci.yml because the release, the archive
+# name and the digest have to move together, and two copies of a pin drift.
+#
+# The `if:` on the download step is a cache hit, not a skip: the verify-and-
+# unpack step below it has no condition, so a cache entry that came back wrong
+# is caught rather than trusted for being local.
+
+inputs:
+  release:
+    description: The libviprs-dep release tag the archive comes from.
+    required: false
+    default: acadsharp-3.7.1-viprs.1
+  archive:
+    description: >-
+      The archive file inside that release. Linux x64 by default, because that
+      is what the GitHub-hosted runners are and because the macOS dylib in these
+      archives carries an install name (@rpath/viprs_acadsharp.dylib) that
+      matches no file that ships beside it.
+    required: false
+    default: acadsharp-linux-x64.tgz
+  sha256:
+    description: The archive's sha256, verified after download and after a cache hit.
+    required: false
+    default: 4cbdbbdd03c4431780ddca80a1d660e6940ff561734d666e162d6fb50438136e
+
+outputs:
+  native-dir:
+    description: The unpacked archive root, the same value written to ACADSHARP_NATIVE_DIR.
+    value: ${{ steps.unpack.outputs.native-dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: Cache the pinned native archive
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: native-archive
+        key: acadsharp-${{ inputs.archive }}-${{ inputs.sha256 }}
+
+    - name: Download the pinned native archive
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        ACADSHARP_RELEASE: ${{ inputs.release }}
+        ACADSHARP_ARCHIVE: ${{ inputs.archive }}
+      run: |
+        set -euo pipefail
+        mkdir -p native-archive
+        curl -fsSL --retry 3 -o "native-archive/$ACADSHARP_ARCHIVE" \
+          "https://github.com/libviprs/libviprs-dep/releases/download/$ACADSHARP_RELEASE/$ACADSHARP_ARCHIVE"
+
+    # Deliberately outside the `if` above, so a cache entry that came back wrong
+    # is caught rather than trusted for being local.
+    - name: Verify and unpack the native archive
+      id: unpack
+      shell: bash
+      env:
+        ACADSHARP_ARCHIVE: ${{ inputs.archive }}
+        ACADSHARP_ARCHIVE_SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        echo "$ACADSHARP_ARCHIVE_SHA256  native-archive/$ACADSHARP_ARCHIVE" | sha256sum -c -
+        rm -rf native-archive/unpacked
+        mkdir -p native-archive/unpacked
+        tar -xzf "native-archive/$ACADSHARP_ARCHIVE" -C native-archive/unpacked
+        # Every top-level entry, deduplicated, rather than the first line of the
+        # listing. `tar | head -1` looks obvious and is wrong here: head closes
+        # the pipe, tar dies on the write, and `pipefail` turns that into a
+        # failed step with nothing but "tar: stdout: write error" to go on.
+        # Reading the whole listing also gets me a check worth having, that the
+        # archive unpacks into exactly one directory.
+        top=$(tar -tzf "native-archive/$ACADSHARP_ARCHIVE" | cut -d/ -f1 | sort -u)
+        test "$(printf '%s\n' "$top" | wc -l)" -eq 1 || {
+          echo "::error::the archive has more than one top-level entry: $top"; exit 1; }
+        root="$PWD/native-archive/unpacked/$top"
+        # The build script wants exactly these two, and reports a warning rather
+        # than an error when it cannot find them, so check here instead of
+        # reading build output.
+        test -d "$root/lib" || { echo "::error::$root has no lib/"; exit 1; }
+        test -f "$root/metadata/LINKINFO.json" || { echo "::error::$root has no metadata/LINKINFO.json"; exit 1; }
+        echo "Unpacked $ACADSHARP_ARCHIVE at $root"
+        echo "native-dir=$root" >> "$GITHUB_OUTPUT"
+        echo "ACADSHARP_NATIVE_DIR=$root" >> "$GITHUB_ENV"
