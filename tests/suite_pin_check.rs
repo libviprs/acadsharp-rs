@@ -95,7 +95,11 @@ fn the_script_is_executable() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = script.metadata().expect("stat the script").permissions().mode();
+        let mode = script
+            .metadata()
+            .expect("stat the script")
+            .permissions()
+            .mode();
         assert!(
             mode & 0o111 != 0,
             "tools/suite_pin_check.sh is not executable (mode {mode:o}); the job calls it directly"
@@ -141,10 +145,26 @@ fn an_unmerged_pin_fails_on_main() {
             "status {status} on main should exit 1, got:\n{}",
             r.output
         );
-        assert!(r.says("::error"), "no ::error for {status} on main:\n{}", r.output);
-        assert!(r.says("SUITE_REV"), "the refusal does not name SUITE_REV:\n{}", r.output);
-        assert!(r.says(SHA), "the refusal does not name the sha:\n{}", r.output);
-        assert!(r.says(status), "the refusal does not name the status:\n{}", r.output);
+        assert!(
+            r.says("::error"),
+            "no ::error for {status} on main:\n{}",
+            r.output
+        );
+        assert!(
+            r.says("SUITE_REV"),
+            "the refusal does not name SUITE_REV:\n{}",
+            r.output
+        );
+        assert!(
+            r.says(SHA),
+            "the refusal does not name the sha:\n{}",
+            r.output
+        );
+        assert!(
+            r.says(status),
+            "the refusal does not name the status:\n{}",
+            r.output
+        );
     }
 }
 
@@ -169,8 +189,16 @@ fn an_unmerged_pin_passes_on_a_pr_ref_with_a_notice() {
                 "ref {ref_name} + status {status} printed an error:\n{}",
                 r.output
             );
-            assert!(r.says(SHA), "the notice does not name the sha:\n{}", r.output);
-            assert!(r.says(status), "the notice does not name the status:\n{}", r.output);
+            assert!(
+                r.says(SHA),
+                "the notice does not name the sha:\n{}",
+                r.output
+            );
+            assert!(
+                r.says(status),
+                "the notice does not name the status:\n{}",
+                r.output
+            );
         }
     }
 }
@@ -206,7 +234,11 @@ fn an_empty_compare_status_is_a_usage_error() {
     for ref_name in every_ref() {
         let r = run(Some(ref_name), &["", SHA]);
         assert_eq!(r.code(), 2, "empty status on {ref_name}:\n{}", r.output);
-        assert!(r.says("::error"), "empty status printed no error:\n{}", r.output);
+        assert!(
+            r.says("::error"),
+            "empty status printed no error:\n{}",
+            r.output
+        );
     }
 }
 
@@ -237,15 +269,29 @@ fn a_missing_ref_name_is_refused() {
 fn the_wrong_number_of_arguments_is_a_usage_error() {
     for args in [&[][..], &["identical", SHA, "extra"][..]] {
         let r = run(Some("main"), args);
-        assert_eq!(r.code(), 2, "args {args:?} should exit 2, got:\n{}", r.output);
-        assert!(r.says("::error"), "args {args:?} printed no error:\n{}", r.output);
+        assert_eq!(
+            r.code(),
+            2,
+            "args {args:?} should exit 2, got:\n{}",
+            r.output
+        );
+        assert!(
+            r.says("::error"),
+            "args {args:?} printed no error:\n{}",
+            r.output
+        );
     }
 }
 
 #[test]
 fn the_sha_argument_is_optional() {
     let r = run(Some("main"), &["identical"]);
-    assert_eq!(r.code(), 0, "a merged status with no sha should pass:\n{}", r.output);
+    assert_eq!(
+        r.code(),
+        0,
+        "a merged status with no sha should pass:\n{}",
+        r.output
+    );
 }
 
 /// The first line of `SUITE_REV` that is neither blank nor a comment. Same rule
@@ -277,9 +323,14 @@ fn suite_rev_is_comments_then_exactly_one_lowercase_sha() {
     );
 
     let sha = payload[0];
-    assert_eq!(sha.len(), 40, "SUITE_REV holds {sha:?}, which is not 40 characters");
+    assert_eq!(
+        sha.len(),
+        40,
+        "SUITE_REV holds {sha:?}, which is not 40 characters"
+    );
     assert!(
-        sha.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        sha.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
         "SUITE_REV holds {sha:?}, which is not lowercase hex; a branch name is never allowed here"
     );
 }
@@ -306,7 +357,10 @@ fn suite_job_block(workflow: &str) -> String {
             block.push(line);
         }
     }
-    assert!(inside, "there is no `suite:` job in .github/workflows/ci.yml");
+    assert!(
+        inside,
+        "there is no `suite:` job in .github/workflows/ci.yml"
+    );
     block.join("\n")
 }
 

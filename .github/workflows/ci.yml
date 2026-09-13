@@ -1,11 +1,13 @@
 name: CI
 
 # The Rust gate for this repo, following the conventions the core `libviprs`
-# crate settled on, minus everything that ties that repo to `libviprs-tests`.
-# There is no counterpart clone, no sibling checkout and no integration job
-# here: this crate's only cross-repo relationship is the native artifact it
-# links, which arrives as a published release rather than as a sibling working
-# tree.
+# crate settled on. Four of the five jobs are that gate. The fifth is the
+# cross-repo one, and it pins rather than guesses: `Suite (acadsharp-rs-tests)`
+# fetches the sibling suite at exactly the sha in SUITE_REV, never a same-named
+# branch and never a fallback to the default branch, which is what `libviprs`'
+# integration job does and what libviprs#1013 is open about. The other
+# cross-repo relationship, the native artifact this crate links, arrives as a
+# published release rather than as a sibling working tree.
 #
 # Jobs, all intended to be required checks on `main` once there is something to
 # require them against:
@@ -13,6 +15,7 @@ name: CI
 #   2. MSRV          the declared floor, actually installed and checked
 #   3. Docs          rustdoc with the warn-by-default link lints denied
 #   4. Test          the suite
+#   5. Suite (acadsharp-rs-tests)  the sibling suite at the pinned SUITE_REV
 
 on:
   # A `push` run builds the branch head. It needs no merge commit, so it is
