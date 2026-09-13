@@ -12,6 +12,15 @@
 //! The source scans are the crude half and they are still worth having: no
 //! doc-scrape exists that runs on stable, and "no raw pointer in the public
 //! API" is otherwise a claim nobody can fail.
+//!
+//! The `unsafe` half of that used to live here too, as a grep over a list of
+//! eight filenames somebody typed. It missed `abi.rs`, which was not on the
+//! list and did contain `unsafe`, and it matched `"unsafe "` with a trailing
+//! space, so `unsafe{` went straight past it. `#![deny(unsafe_code)]` at the
+//! crate root with `#[allow(unsafe_code)]` on the two modules that need one
+//! does that job properly: it is a compile error, it cannot miss a spelling,
+//! and a new module is covered the moment it exists. What is left here is the
+//! part no lint covers, and the list it runs over is read from the directory.
 
 use std::path::{Path, PathBuf};
 
@@ -80,19 +89,63 @@ fn src(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(name)
 }
 
-/// Every module that makes up the safe API. `ffi` and `sys` are deliberately
-/// absent: one is the transcription and the other is the only place `unsafe`
-/// is allowed to live.
-const API_MODULES: [&str; 8] = [
-    "lib.rs",
-    "error.rs",
-    "limits.rs",
-    "capabilities.rs",
-    "cancel.rs",
-    "document.rs",
-    "item.rs",
-    "stream.rs",
-];
+/// The two modules that are allowed to name a pointer and an `ffi` type: one
+/// is the transcription of the C header and the other is the seam that calls
+/// it. Everything else in `src/` is the safe API and is scanned.
+///
+/// An explicit list of exemptions rather than an explicit list of members,
+/// which is the whole point: a module added tomorrow is covered by default,
+/// and exempting one is a diff somebody has to read.
+const EXEMPT: [&str; 2] = ["ffi.rs", "sys.rs"];
+
+fn modules_in_src() -> Vec<String> {
+    let mut names: Vec<String> =
+        std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
+            .expect("src/ is readable")
+            .map(|entry| entry.expect("a directory entry").file_name())
+            .filter_map(|name| name.into_string().ok())
+            .filter(|name| name.ends_with(".rs"))
+            .collect();
+    names.sort();
+    names
+}
+
+/// Every module that makes up the safe API, read from the directory.
+fn api_modules() -> Vec<String> {
+    modules_in_src()
+        .into_iter()
+        .filter(|name| !EXEMPT.contains(&name.as_str()))
+        .collect()
+}
+
+#[test]
+fn the_scanned_list_is_the_directory_minus_a_list_of_exemptions() {
+    // Two ways this goes quietly wrong. A `read_dir` that came back empty
+    // would make every scan below pass by scanning nothing, and an exemption
+    // naming a file that no longer exists would sit there widening nothing
+    // while somebody assumes it covers something.
+    let all = modules_in_src();
+    assert!(
+        all.len() >= 10,
+        "src/ came back with {} modules, which is not this crate: {all:?}",
+        all.len()
+    );
+    for exempt in EXEMPT {
+        assert!(
+            all.contains(&exempt.to_string()),
+            "EXEMPT names src/{exempt}, which is not in src/ any more, so it exempts nothing \
+             and the module it used to name is either gone or scanned under another name"
+        );
+    }
+    let scanned = api_modules();
+    assert_eq!(scanned.len(), all.len() - EXEMPT.len());
+    for name in ["abi.rs", "batch.rs", "item.rs", "stream.rs", "document.rs"] {
+        assert!(
+            scanned.contains(&name.to_string()),
+            "src/{name} is not being scanned"
+        );
+    }
+}
 
 fn read(name: &str) -> String {
     let path = src(name);
@@ -113,7 +166,8 @@ fn public_lines(text: &str) -> Vec<(usize, &str)> {
 
 #[test]
 fn no_raw_pointer_and_no_ffi_type_is_reachable_from_the_public_api() {
-    for module in API_MODULES {
+    for module in api_modules() {
+        let module = module.as_str();
         let text = read(module);
         for (number, line) in public_lines(&text) {
             for forbidden in ["*mut", "*const", "ffi::", "viprs_acad_"] {
@@ -129,21 +183,44 @@ fn no_raw_pointer_and_no_ffi_type_is_reachable_from_the_public_api() {
 }
 
 #[test]
-fn unsafe_lives_in_ffi_and_sys_and_nowhere_else() {
-    for module in API_MODULES {
-        let text = read(module);
-        for (number, line) in text.lines().enumerate() {
-            let line = line.trim();
-            if line.starts_with("//") || line.starts_with("#!") {
-                continue;
-            }
-            assert!(
-                !line.contains("unsafe "),
-                "src/{module}:{} reaches for unsafe, and the safe API is not where that \
-                 belongs: {line}",
-                number + 1
-            );
+fn the_unsafe_exemption_is_two_lines_in_the_crate_root_and_nothing_else() {
+    // `#![deny(unsafe_code)]` is what actually stops an `unsafe` block in the
+    // safe API, and the compiler cannot be talked out of it by a spelling. What
+    // it can be talked out of is another `#[allow(unsafe_code)]`, so this
+    // counts them: two, both in `lib.rs`, both on a module declaration naming
+    // something in `EXEMPT`.
+    let root = read("lib.rs");
+    assert!(
+        root.contains("#![deny(unsafe_code)]"),
+        "the crate root stopped denying unsafe_code, which is the whole instrument"
+    );
+
+    let mut allowed = Vec::new();
+    let mut lines = root.lines().enumerate().peekable();
+    while let Some((number, line)) = lines.next() {
+        if line.trim().starts_with("//") || !line.contains("allow(unsafe_code)") {
+            continue;
         }
+        let (_, next) = *lines.peek().unwrap_or_else(|| {
+            panic!(
+                "src/lib.rs:{} allows unsafe_code and declares nothing",
+                number + 1
+            )
+        });
+        allowed.push(next.trim().to_string());
+    }
+    assert_eq!(
+        allowed,
+        vec!["pub mod ffi;".to_string(), "mod sys;".to_string()],
+        "the unsafe exemption moved. It is two module declarations in src/lib.rs and every \
+         other module in this crate is denied an `unsafe` block by the compiler"
+    );
+
+    for module in api_modules() {
+        assert!(
+            !EXEMPT.contains(&module.as_str()),
+            "src/{module} is scanned and exempt at the same time"
+        );
     }
 }
 
@@ -152,10 +229,8 @@ fn no_unsafe_impl_anywhere_in_the_crate() {
     // Absence of `Send` and `Sync` comes free from holding a raw pointer.
     // Reaching for `unsafe impl` to put one back is the failure mode this
     // guards, and it would silently satisfy every other test in the suite.
-    for module in API_MODULES
-        .iter()
-        .chain(["ffi.rs", "sys.rs", "abi.rs", "batch.rs"].iter())
-    {
+    for module in modules_in_src() {
+        let module = module.as_str();
         let text = read(module);
         for (number, line) in text.lines().enumerate() {
             let line = line.trim();

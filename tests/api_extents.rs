@@ -82,7 +82,12 @@ fn a_finite_right_way_round_box_survives_all_of_it() {
     // beside it.
     let expected = Bounds::from_extents(A_REAL_BOX).expect("a real box is a box");
     assert_eq!(
-        [expected.min_x, expected.min_y, expected.max_x, expected.max_y],
+        [
+            expected.min_x,
+            expected.min_y,
+            expected.max_x,
+            expected.max_y
+        ],
         A_REAL_BOX
     );
 

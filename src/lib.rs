@@ -116,19 +116,32 @@
 //! [`libviprs-dep`]: https://github.com/libviprs/libviprs-dep
 #![forbid(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]
+// The layering rule, as a lint rather than as a grep. Two modules are allowed
+// an `unsafe` block and they say so on the line that declares them, so widening
+// that is a diff a reviewer sees rather than a file a hand-maintained list in a
+// test happened not to name. `tests/api_surface.rs` keeps the text scans for
+// the `*mut` and `ffi::` checks, which no lint covers.
+#![deny(unsafe_code)]
 
 pub mod abi;
 pub mod batch;
 pub mod diagnostics;
-pub mod ffi;
+pub mod item;
 
 mod cancel;
 mod capabilities;
 mod document;
 mod error;
-pub mod item;
 mod limits;
 mod stream;
+
+// The raw transcription of `viprs_acadsharp.h`, and the one private module
+// that calls it. These two lines are the whole of the exemption from
+// `deny(unsafe_code)` above.
+#[allow(unsafe_code)]
+pub mod ffi;
+
+#[allow(unsafe_code)]
 mod sys;
 
 pub use abi::{EXPECTED_ABI_FINGERPRINT, EXPECTED_ABI_VERSION, EXPECTED_WIRE_VERSION};
