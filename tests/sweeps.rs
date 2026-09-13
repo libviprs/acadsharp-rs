@@ -6,6 +6,14 @@
 //! prefix of a good batch is self consistent right up to the cut, so it always
 //! ends in either a clean stop or a length that runs past what is left. The
 //! hand written vectors in `malformed.rs` are what cover the rest.
+//!
+//! `drain` used to read one batch and stop, so two of the four captures were
+//! swept over bytes nothing looked at. Measured over the same cuts, reading one
+//! batch gives 7580 refused and 10760 clean; walking the whole capture gives
+//! 18333 refused and 7 clean, which is one clean stop per batch boundary and
+//! nothing else. Those 10,753 cuts that came back clean were the instrument
+//! reporting on bytes it never reached, and they were also what satisfied the
+//! sweep's own `clean > 0` control.
 
 mod wire;
 
@@ -16,24 +24,37 @@ const SYN_2V_3P: &[u8] = include_bytes!("data/syn_2v_3p.bin");
 const SYN_1V_1P: &[u8] = include_bytes!("data/syn_1v_1p.bin");
 const SYN_3V_40P: &[u8] = include_bytes!("data/syn_3v_40p.bin");
 
-/// Reads a batch to the end, swallowing whatever it says. The point is that
-/// it returns at all: no panic, no hang, no index out of range.
+/// Reads a whole capture to the end, swallowing whatever it says. The point is
+/// that it returns at all: no panic, no hang, no index out of range.
+///
+/// It walks batch by batch, advancing by `total_len()` the way `read_capture`
+/// does. Reading one batch and stopping is what this used to do, and it meant
+/// every mutation past the first batch of the two multi-batch captures changed
+/// nothing the instrument could see.
 fn drain(bytes: &[u8]) -> (usize, bool) {
-    match BatchReader::new(bytes) {
-        Err(_) => (0, true),
-        Ok(reader) => {
-            let mut ok = 0;
-            let mut refused = false;
-            for record in reader.records() {
-                match record {
-                    Ok(_) => ok += 1,
-                    Err(_) => {
-                        refused = true;
-                        break;
+    let mut ok = 0;
+    let mut offset = 0usize;
+    loop {
+        // Deliberately not a `while offset < bytes.len()`: an empty buffer has
+        // to go through `BatchReader::new` and be refused, the same as every
+        // other buffer too short to hold a batch header.
+        match BatchReader::new(&bytes[offset..]) {
+            Err(_) => return (ok, true),
+            Ok(reader) => {
+                for record in reader.records() {
+                    match record {
+                        Ok(_) => ok += 1,
+                        Err(_) => return (ok, true),
                     }
                 }
+                // `BatchReader::new` proved `12 + payload_length` fits inside
+                // what was left, so this cannot walk past the end, and
+                // `total_len()` is at least 12, so it cannot fail to advance.
+                offset += reader.total_len();
+                if offset >= bytes.len() {
+                    return (ok, false);
+                }
             }
-            (ok, refused)
         }
     }
 }
@@ -48,6 +69,27 @@ fn truncating_a_capture_at_every_offset_never_panics() {
         ("syn_1v_1p.bin", SYN_1V_1P),
         ("syn_3v_40p.bin", SYN_3V_40P),
     ] {
+        // The control, per capture and scoped to the bytes the walk actually
+        // reaches. A whole-sweep `refusals > 0 && clean > 0` is satisfied for
+        // free: a cut past the first batch used to be clean because nothing
+        // looked at it, so the control passed on cuts the instrument never
+        // touched. Both halves have to come from inside the first batch, which
+        // is the part every capture has.
+        let first_batch = BatchReader::new(bytes)
+            .unwrap_or_else(|e| panic!("{name} does not open: {e}"))
+            .total_len();
+        let mut refused_in_first = 0usize;
+        let mut clean_in_first = 0usize;
+        let mut batches = 0usize;
+        {
+            let mut offset = 0;
+            while offset < bytes.len() {
+                let batch = BatchReader::new(&bytes[offset..])
+                    .unwrap_or_else(|e| panic!("{name} at {offset}: {e}"));
+                offset += batch.total_len();
+                batches += 1;
+            }
+        }
         for cut in 0..=bytes.len() {
             let (_, refused) = drain(&bytes[..cut]);
             if refused {
@@ -55,16 +97,28 @@ fn truncating_a_capture_at_every_offset_never_panics() {
             } else {
                 clean += 1;
             }
+            if cut <= first_batch {
+                if refused {
+                    refused_in_first += 1;
+                } else {
+                    clean_in_first += 1;
+                }
+            }
         }
+        assert!(
+            refused_in_first > 0,
+            "{name}: some cut inside the first batch must be refused"
+        );
+        assert!(
+            clean_in_first > 0,
+            "{name}: some cut inside the first batch must stop cleanly"
+        );
         println!(
-            "{name}: {} truncations parsed without a panic",
+            "{name}: {} truncations over {batches} batches parsed without a panic, \
+             {refused_in_first} refused and {clean_in_first} clean inside the first {first_batch} bytes",
             bytes.len() + 1
         );
     }
-    // A positive control on the sweep itself. If every cut came back clean the
-    // sweep would be testing nothing, and a zero has two explanations.
-    assert!(refusals > 0, "some truncations must be refused");
-    assert!(clean > 0, "some truncations must stop cleanly");
     println!("truncation sweep: {refusals} refused, {clean} stopped cleanly");
 }
 
