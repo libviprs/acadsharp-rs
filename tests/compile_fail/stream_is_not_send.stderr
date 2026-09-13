@@ -1,0 +1,51 @@
+error[E0277]: `*mut viprs_acad_decode_handle` cannot be sent between threads safely
+ --> tests/compile_fail/stream_is_not_send.rs:4:19
+  |
+4 |     assert_send::<acadsharp_rs::PrimitiveStream<'static>>();
+  |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `*mut viprs_acad_decode_handle` cannot be sent between threads safely
+  |
+  = help: within `PrimitiveStream<'static>`, the trait `Send` is not implemented for `*mut viprs_acad_decode_handle`
+note: required because it appears within the type `acadsharp_rs::sys::DecodeHandle`
+ --> src/sys.rs
+  |
+  | pub(crate) struct DecodeHandle {
+  |                   ^^^^^^^^^^^^
+note: required because it appears within the type `PrimitiveStream<'static>`
+ --> src/stream.rs
+  |
+  | pub struct PrimitiveStream<'doc> {
+  |            ^^^^^^^^^^^^^^^
+note: required by a bound in `assert_send`
+ --> tests/compile_fail/stream_is_not_send.rs:1:19
+  |
+1 | fn assert_send<T: Send>() {}
+  |                   ^^^^ required by this bound in `assert_send`
+
+error[E0277]: `*mut viprs_acad_handle` cannot be shared between threads safely
+ --> tests/compile_fail/stream_is_not_send.rs:4:19
+  |
+4 |     assert_send::<acadsharp_rs::PrimitiveStream<'static>>();
+  |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `*mut viprs_acad_handle` cannot be shared between threads safely
+  |
+  = help: within `Document`, the trait `Sync` is not implemented for `*mut viprs_acad_handle`
+note: required because it appears within the type `acadsharp_rs::sys::DocumentHandle`
+ --> src/sys.rs
+  |
+  | pub(crate) struct DocumentHandle {
+  |                   ^^^^^^^^^^^^^^
+note: required because it appears within the type `Document`
+ --> src/document.rs
+  |
+  | pub struct Document {
+  |            ^^^^^^^^
+  = note: required for `&'static Document` to implement `Send`
+note: required because it appears within the type `PrimitiveStream<'static>`
+ --> src/stream.rs
+  |
+  | pub struct PrimitiveStream<'doc> {
+  |            ^^^^^^^^^^^^^^^
+note: required by a bound in `assert_send`
+ --> tests/compile_fail/stream_is_not_send.rs:1:19
+  |
+1 | fn assert_send<T: Send>() {}
+  |                   ^^^^ required by this bound in `assert_send`

@@ -118,14 +118,11 @@ fn the_views_are_the_two_the_synthetic_document_describes() {
     assert_eq!(views[0].name(), "Model");
     assert_eq!(views[0].kind(), ViewKind::Model);
     assert_eq!(views[0].raw_kind(), 0);
-    let extents = views[0].extents().expect("view 0 has a right way round box");
+    let extents = views[0]
+        .extents()
+        .expect("view 0 has a right way round box");
     assert_eq!(
-        [
-            extents.min_x,
-            extents.min_y,
-            extents.max_x,
-            extents.max_y
-        ],
+        [extents.min_x, extents.min_y, extents.max_x, extents.max_y],
         [-100.25, -50.5, 100.75, 50.125],
         "four different numbers, none round and none symmetric with another"
     );
@@ -243,7 +240,10 @@ fn the_variable_length_primitives_carry_the_wires_own_fields() {
     let Item::Primitive(Primitive::Polygon(polygon)) = &items[8] else {
         panic!("record 9 is the polygon")
     };
-    assert!(polygon.closed, "a Polygon is record 4's payload with closed set");
+    assert!(
+        polygon.closed,
+        "a Polygon is record 4's payload with closed set"
+    );
     assert_eq!(polygon.vertices.len(), 3);
     assert_eq!(polygon.bulges.len(), 3);
 
@@ -269,7 +269,11 @@ fn the_totals_are_surfaced_because_they_are_the_only_completeness_proof() {
         Document::open_bytes(&decoder, &synthetic(1, 12), &Limits::new()).expect("it opens");
     let mut stream = document.decode(0).expect("it decodes");
 
-    assert_eq!(stream.document_end(), None, "nothing is known before the walk");
+    assert_eq!(
+        stream.document_end(),
+        None,
+        "nothing is known before the walk"
+    );
 
     let items: Vec<Item> = (&mut stream).map(|i| i.expect("it parses")).collect();
 
@@ -350,11 +354,17 @@ fn a_drawing_this_build_cannot_read_is_refused_with_the_range_to_look_at() {
     // Not a DWG and not the synthetic magic, so the library has to say what it
     // does with bytes it cannot read at all.
     let decoder = decoder();
-    let outcome = Document::open_bytes(&decoder, b"not a drawing at all, sorry", &Limits::new());
+    let outcome = Document::open_bytes(&decoder, b"not a drawing at all, sorry", &Limits::new())
+        .map(|document| document.view_count());
     let error = outcome.expect_err("that is not a drawing");
     println!("opening nonsense bytes gives {error}");
-    assert!(
-        !matches!(error, acadsharp_rs::Error::Native(_)),
-        "whatever it is, it has a name in this crate: {error:?}"
+    assert_eq!(
+        error,
+        acadsharp_rs::Error::UnsupportedFormat {
+            dwg_version_min: 1014,
+            dwg_version_max: 1032,
+        },
+        "and the refusal carries the range the caller is told to look at, rather than making \
+         them go and ask a second time"
     );
 }

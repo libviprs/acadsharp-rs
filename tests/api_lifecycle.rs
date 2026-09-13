@@ -25,8 +25,7 @@ fn every_handle_is_closed_exactly_once_and_the_decode_goes_first() {
     let decodes_before = diagnostics::decode_closes();
 
     {
-        let document =
-            Document::open_bytes(&decoder, SYNTHETIC, &Limits::new()).expect("it opens");
+        let document = Document::open_bytes(&decoder, SYNTHETIC, &Limits::new()).expect("it opens");
         assert_eq!(
             diagnostics::document_closes(),
             documents_before,
@@ -86,8 +85,7 @@ fn every_handle_is_closed_exactly_once_and_the_decode_goes_first() {
     let documents_mid = diagnostics::document_closes();
     let decodes_mid = diagnostics::decode_closes();
     {
-        let document =
-            Document::open_bytes(&decoder, SYNTHETIC, &Limits::new()).expect("it opens");
+        let document = Document::open_bytes(&decoder, SYNTHETIC, &Limits::new()).expect("it opens");
         let mut stream = document.decode(0).expect("it decodes");
         assert!(stream.next().is_some());
         // Both go out of scope here, the stream first, because a value

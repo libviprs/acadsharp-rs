@@ -126,7 +126,9 @@ fn error_is_a_std_error_and_hands_back_the_inner_one_where_there_is_one() {
         reason: Reason::BadMagic,
     };
     let wrapped = Error::Batch(inner);
-    let source = wrapped.source().expect("a wrapped batch error has a source");
+    let source = wrapped
+        .source()
+        .expect("a wrapped batch error has a source");
     assert_eq!(
         format!("{source}"),
         format!("{inner}"),

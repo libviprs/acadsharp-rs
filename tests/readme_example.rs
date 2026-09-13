@@ -44,7 +44,11 @@ fn the_readme_example_is_the_doctest() {
     let doc: String = lib
         .lines()
         .take_while(|line| line.starts_with("//!") || line.trim().is_empty())
-        .map(|line| line.strip_prefix("//! ").or(line.strip_prefix("//!")).unwrap_or(""))
+        .map(|line| {
+            line.strip_prefix("//! ")
+                .or(line.strip_prefix("//!"))
+                .unwrap_or("")
+        })
         .collect::<Vec<_>>()
         .join("\n");
 

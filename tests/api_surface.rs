@@ -157,10 +157,19 @@ fn no_unsafe_impl_anywhere_in_the_crate() {
         .chain(["ffi.rs", "sys.rs", "abi.rs", "batch.rs"].iter())
     {
         let text = read(module);
-        assert!(
-            !text.contains("unsafe impl"),
-            "src/{module} carries an `unsafe impl`"
-        );
+        for (number, line) in text.lines().enumerate() {
+            let line = line.trim();
+            // Prose is allowed to name the thing it is refusing, and this
+            // crate's documentation names it several times.
+            if line.starts_with("//") {
+                continue;
+            }
+            assert!(
+                !line.contains("unsafe impl"),
+                "src/{module}:{} carries an `unsafe impl`: {line}",
+                number + 1
+            );
+        }
     }
 }
 
@@ -201,10 +210,9 @@ fn the_limits_module_carries_no_copy_of_a_documented_default() {
 fn the_crate_declares_no_runtime_dependency() {
     // The safe API is where a convenience crate would have crept in. `trybuild`
     // is a dev-dependency and never reaches a consumer's binary.
-    let manifest = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
-    )
-    .expect("the manifest");
+    let manifest =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+            .expect("the manifest");
     let after = manifest
         .split("[dependencies]")
         .nth(1)

@@ -1,0 +1,22 @@
+error[E0277]: `*const ()` cannot be sent between threads safely
+ --> tests/compile_fail/decoder_is_not_send.rs:4:19
+  |
+4 |     assert_send::<acadsharp_rs::Decoder>();
+  |                   ^^^^^^^^^^^^^^^^^^^^^ `*const ()` cannot be sent between threads safely
+  |
+  = help: within `Decoder`, the trait `Send` is not implemented for `*const ()`
+note: required because it appears within the type `acadsharp_rs::sys::NotThreadSafe`
+ --> src/sys.rs
+  |
+  | pub(crate) struct NotThreadSafe(
+  |                   ^^^^^^^^^^^^^
+note: required because it appears within the type `Decoder`
+ --> src/document.rs
+  |
+  | pub struct Decoder {
+  |            ^^^^^^^
+note: required by a bound in `assert_send`
+ --> tests/compile_fail/decoder_is_not_send.rs:1:19
+  |
+1 | fn assert_send<T: Send>() {}
+  |                   ^^^^ required by this bound in `assert_send`

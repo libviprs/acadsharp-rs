@@ -106,8 +106,15 @@ fn cancelling_between_batches_yields_exactly_one_error_and_then_none_forever() {
          before it with {after} after"
     );
     assert!(
-        stream.batches_pulled() > 1,
-        "the cancel should have landed on a later batch, not the first"
+        after > 0,
+        "the flag is read between batches and never inside a native parse, so the rest of the \
+         batch already in hand still comes out. Nothing came out after the cancel, which is \
+         what cancelling in the middle of a batch would look like"
+    );
+    assert_eq!(
+        stream.batches_pulled(),
+        1,
+        "the cancel refused the pull of the next batch, so that one never became a batch"
     );
 
     for _ in 0..5 {
@@ -151,7 +158,10 @@ fn a_clone_of_the_token_cancels_the_same_decode() {
             None => break,
         }
     }
-    assert_eq!(errors, 1, "the decode saw the flag through the stream's own clone");
+    assert_eq!(
+        errors, 1,
+        "the decode saw the flag through the stream's own clone"
+    );
 }
 
 #[test]

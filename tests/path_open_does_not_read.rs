@@ -12,7 +12,6 @@
 //! the same reason `tests/alloc_bound.rs` does.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::io::{Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 struct Counting;
@@ -50,6 +49,7 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
 
+#[cfg(acadsharp_linked)]
 fn measure<T>(f: impl FnOnce() -> T) -> (T, usize) {
     MAX_SINGLE.store(0, Ordering::Relaxed);
     ARMED.store(true, Ordering::Relaxed);
@@ -58,14 +58,16 @@ fn measure<T>(f: impl FnOnce() -> T) -> (T, usize) {
     (value, MAX_SINGLE.load(Ordering::Relaxed))
 }
 
+#[cfg(acadsharp_linked)]
 const FILE_BYTES: u64 = 256 * 1024 * 1024;
 
 #[cfg(acadsharp_linked)]
 fn run() {
+    use std::io::{Seek, SeekFrom, Write};
+
     use acadsharp_rs::{Decoder, Document, Limits};
 
-    let dir =
-        std::env::temp_dir().join(format!("acadsharp-rs-h31-path-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("acadsharp-rs-h31-path-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("a scratch directory");
     let path = dir.join("big.dwg");
 
@@ -81,14 +83,16 @@ fn run() {
         file.write_all(&[0]).expect("the last byte");
     }
     let on_disk = std::fs::metadata(&path).expect("stat").len();
-    assert_eq!(on_disk, FILE_BYTES, "the probe file is {on_disk} bytes long");
+    assert_eq!(
+        on_disk, FILE_BYTES,
+        "the probe file is {on_disk} bytes long"
+    );
 
     let decoder = Decoder::new().expect("the handshake passes");
     let limits = Limits::new().with_max_input_bytes(FILE_BYTES * 2);
 
-    let (document, largest) = measure(|| {
-        Document::open_path(&decoder, &path, &limits).expect("the path route opens it")
-    });
+    let (document, largest) =
+        measure(|| Document::open_path(&decoder, &path, &limits).expect("the path route opens it"));
 
     println!(
         "opening a {} MiB file allocated at most {largest} bytes in one request",
