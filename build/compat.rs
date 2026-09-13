@@ -312,10 +312,22 @@ impl Compat {
 /// about.
 ///
 /// It is a struct rather than a pair of arguments so that whoever produced the
-/// two strings is nobody's business here. Issue #3 lands a real manifest
-/// parser under `serde`; when it does, it builds one of these from its own
-/// parsed manifest and [`ArchiveIdentity::from_manifest_text`] below goes
-/// away, with [`Compat::check_archive`] and every test around it untouched.
+/// two strings is nobody's business here. That is the whole point of it: this
+/// half of the build script checks an archive somebody else has already found,
+/// validated and parsed, and it reads no environment variable, resolves no
+/// path and prints nothing of its own.
+///
+/// Issue #3 lands the real manifest parser under `serde`. When it does, it
+/// builds one of these out of its own `LinkInfo` in one line:
+///
+/// ```ignore
+/// ArchiveIdentity::new(&info.artifact_version, &info.acadsharp_version)
+/// ```
+///
+/// and [`ArchiveIdentity::from_manifest_text`] below goes away, with
+/// [`Compat::check_archive`] and every test around it untouched. A
+/// `From<&LinkInfo>` would be nicer still and cannot be written here, because
+/// that type does not exist on this branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveIdentity {
     /// `<upstream>-viprs.<revision>`, e.g. `3.7.1-viprs.1`.
@@ -325,12 +337,37 @@ pub struct ArchiveIdentity {
 }
 
 impl ArchiveIdentity {
+    /// The two fields, from whoever already has them.
+    ///
+    /// This is the seam. It takes strings rather than a manifest so that the
+    /// parser producing them is somebody else's decision, which is what lets
+    /// the hand reader below be deleted without a single test moving.
+    pub fn new(
+        artifact_version: impl Into<String>,
+        acadsharp_version: impl Into<String>,
+    ) -> ArchiveIdentity {
+        ArchiveIdentity {
+            artifact_version: artifact_version.into(),
+            acadsharp_version: acadsharp_version.into(),
+        }
+    }
+
     /// Reads the two fields out of a manifest, by hand.
     ///
-    /// **Issue #3's parser replaces this.** It is here so this lane does not
-    /// depend on that one having landed, and it reads exactly two flat string
-    /// fields and understands nothing else, which is deliberately too little
-    /// to be worth keeping once there is a real parser.
+    /// **This is dead on compose.** Issue #3 ships `metadata/LINKINFO.json`
+    /// parsed by `serde_json`, and the moment that lands this function and
+    /// [`string_field`] below are deleted and [`ArchiveIdentity::new`] takes
+    /// over. It is here only so this lane stands up on its own branch, and it
+    /// reads exactly two flat string fields and understands nothing else,
+    /// which is deliberately too little to be worth keeping.
+    ///
+    /// It is also not quite right, in the direction of refusing things a real
+    /// parser accepts. It counts a field by looking for `"name"` followed by a
+    /// colon, so a manifest that puts the same key inside a nested object,
+    /// which `serde_json` reads fine because the outer key is one this crate
+    /// skips, is refused here for saying it twice. Getting that right means
+    /// tracking nesting, which means writing the parser issue #3 has already
+    /// written.
     pub fn from_manifest_text(json: &str, manifest: &Path) -> ArchiveIdentity {
         ArchiveIdentity {
             artifact_version: string_field(json, "artifact_version", manifest),
@@ -549,21 +586,38 @@ fn strip_comment<'a>(line: &'a str, number: usize, what: &str) -> &'a str {
 
 /// One `"name": "value"` field out of a JSON document.
 ///
-/// **Issue #3's parser replaces this**, along with
-/// [`ArchiveIdentity::from_manifest_text`] above. Until then: the manifest
-/// arrives inside a downloaded tarball, so a field that appears twice is
-/// refused rather than resolved, and a control character is refused because
+/// **Dead on compose**, along with [`ArchiveIdentity::from_manifest_text`]
+/// above: issue #3's `serde_json` parser replaces both. Until then: the
+/// manifest arrives inside a downloaded tarball, so a field that appears twice
+/// is refused rather than resolved, and a control character is refused because
 /// these strings end up in build output that a human then has to read.
+///
+/// # Counting at key position, and why that is still not enough
+///
+/// The count used to be over `"name"` anywhere in the text, and that was a
+/// false refusal. `{"fields_this_consumer_reads": ["artifact_version", ...]}`
+/// is valid JSON, `serde_json` reads it without a murmur (the outer key is one
+/// this crate skips), and the count saw two and stopped the build. A build that
+/// refuses something correct is worse than one that misses something wrong,
+/// because nobody can act on it.
+///
+/// So an occurrence counts only when a colon follows it, which is the shape a
+/// key has and a value does not. That still is not a JSON parser: the same key
+/// inside a nested object is at key position too, and this refuses it. Getting
+/// that one right means tracking nesting, which means writing the parser issue
+/// #3 has already written, so I would rather leave the residue in something
+/// about to be deleted than grow a second parser to cover it.
 fn string_field(json: &str, field: &str, manifest: &Path) -> String {
     let key = format!("\"{field}\"");
-    let occurrences = json.matches(&key).count();
+    let at = key_positions(json, &key);
     assert!(
-        occurrences == 1,
-        "{} names `{field}` {occurrences} times, and I read it exactly once or not at all.",
-        manifest.display()
+        at.len() == 1,
+        "{} names `{field}` as a key {} times, and I read it exactly once or not at all.",
+        manifest.display(),
+        at.len()
     );
 
-    let rest = &json[json.find(&key).expect("counted one just above") + key.len()..];
+    let rest = &json[at[0] + key.len()..];
     let open = rest.find('"').unwrap_or_else(|| {
         panic!(
             "`{field}` in {} is not followed by a quoted string",
@@ -601,4 +655,21 @@ fn string_field(json: &str, field: &str, manifest: &Path) -> String {
         manifest.display()
     );
     value.to_string()
+}
+
+/// Every offset in `json` where `key` is followed by a colon, which is where a
+/// JSON key sits and where a value does not.
+///
+/// Deleted with [`string_field`] at compose.
+fn key_positions(json: &str, key: &str) -> Vec<usize> {
+    let mut found = Vec::new();
+    let mut from = 0usize;
+    while let Some(offset) = json[from..].find(key) {
+        let at = from + offset;
+        from = at + key.len();
+        if json[from..].trim_start().starts_with(':') {
+            found.push(at);
+        }
+    }
+    found
 }
