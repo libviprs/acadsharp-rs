@@ -34,3 +34,19 @@ incompatible_msrv = "warn"
 name = "alloc_bound"
 path = "tests/alloc_bound.rs"
 harness = false
+
+# --- issue #5 (H3.1) owns this block ------------------------------------
+# Same reason as `alloc_bound` above: the instrument is a counting global
+# allocator, and a second test thread allocating inside the measurement window
+# would make the number it reports mean nothing.
+[[test]]
+name = "path_open_does_not_read"
+path = "tests/path_open_does_not_read.rs"
+harness = false
+
+# `trybuild` drives the compile-fail cases that say the handles never cross a
+# thread and a document never outlives the stream borrowing it. Dev only, so it
+# never reaches a consumer's binary.
+[dev-dependencies]
+trybuild = "1.0"
+# --- end issue #5 (H3.1) ------------------------------------------------
