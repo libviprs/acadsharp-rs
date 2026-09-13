@@ -146,10 +146,66 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    env:
+      # The pinned native release, the archive inside it and that archive's
+      # sha256, all in one place so the cache key, the download and the
+      # verification cannot drift apart. Moving the pin means moving these
+      # three lines together.
+      ACADSHARP_RELEASE: acadsharp-3.7.1-viprs.1
+      ACADSHARP_ARCHIVE: acadsharp-linux-x64.tgz
+      ACADSHARP_ARCHIVE_SHA256: 4cbdbbdd03c4431780ddca80a1d660e6940ff561734d666e162d6fb50438136e
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      # Everything that calls the native library is `cfg(acadsharp_linked)`,
+      # which only appears when the build script found an archive. So without
+      # these three steps this job runs zero native tests and goes green, and a
+      # skipped lane is the same colour as a passing one. `tests/
+      # native_lane_is_live.rs` is the backstop: it fails when
+      # ACADSHARP_NATIVE_DIR is set and the cfg is not, so a fetch that
+      # silently produced nothing cannot pass by having run nothing.
+      - name: Cache the pinned native archive
+        id: native-archive-cache
+        uses: actions/cache@v4
+        with:
+          path: native-archive
+          key: acadsharp-${{ env.ACADSHARP_ARCHIVE }}-${{ env.ACADSHARP_ARCHIVE_SHA256 }}
+
+      - name: Download the pinned native archive
+        if: steps.native-archive-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p native-archive
+          curl -fsSL --retry 3 -o "native-archive/$ACADSHARP_ARCHIVE" \
+            "https://github.com/libviprs/libviprs-dep/releases/download/$ACADSHARP_RELEASE/$ACADSHARP_ARCHIVE"
+
+      # Deliberately outside the `if` above, so a cache entry that came back
+      # wrong is caught rather than trusted for being local.
+      - name: Verify and unpack the native archive
+        run: |
+          set -euo pipefail
+          echo "$ACADSHARP_ARCHIVE_SHA256  native-archive/$ACADSHARP_ARCHIVE" | sha256sum -c -
+          rm -rf native-archive/unpacked
+          mkdir -p native-archive/unpacked
+          tar -xzf "native-archive/$ACADSHARP_ARCHIVE" -C native-archive/unpacked
+          # Every top-level entry, deduplicated, rather than the first line of
+          # the listing. `tar | head -1` looks obvious and is wrong here: head
+          # closes the pipe, tar dies on the write, and `pipefail` turns that
+          # into a failed step with nothing but "tar: stdout: write error" to
+          # go on. Reading the whole listing also gets me a check worth having,
+          # that the archive unpacks into exactly one directory.
+          top=$(tar -tzf "native-archive/$ACADSHARP_ARCHIVE" | cut -d/ -f1 | sort -u)
+          test "$(printf '%s\n' "$top" | wc -l)" -eq 1 || {
+            echo "::error::the archive has more than one top-level entry: $top"; exit 1; }
+          root="$PWD/native-archive/unpacked/$top"
+          # The build script wants exactly these two, and reports a warning
+          # rather than an error when it cannot find them, so the job checks
+          # here instead of reading build output.
+          test -d "$root/lib" || { echo "::error::$root has no lib/"; exit 1; }
+          test -f "$root/metadata/LINKINFO.json" || { echo "::error::$root has no metadata/LINKINFO.json"; exit 1; }
+          echo "ACADSHARP_NATIVE_DIR=$root" >> "$GITHUB_ENV"
+
       - run: cargo test --all-targets
       # `--all-targets` skips doctests, so they need their own line or the
       # examples in the public API documentation are compiled by nothing.
