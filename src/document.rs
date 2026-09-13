@@ -23,6 +23,13 @@
 //! on one document, so this is liftable later behind a type that owns the
 //! pairing. It is not liftable by writing `unsafe impl Send`, and
 //! `tests/api_surface.rs` fails the moment anybody does.
+//!
+//! # No `#[inline]`
+//!
+//! Measured and rejected: [`crate::PrimitiveStream`]'s module documentation has
+//! the numbers. It bought two to three times the throughput one layer down in
+//! [`crate::batch`] and costs about 3% here, because an allocation and a 120
+//! byte enum dwarf the call.
 
 use core::fmt;
 use std::path::Path;

@@ -37,6 +37,16 @@
 //! **The totals.** [`PrimitiveStream::is_complete`] is the only proof a caller
 //! gets that a decode was not truncated, and it is why the frame records are
 //! items rather than something the stream swallows.
+//!
+//! # There is no `#[inline]` here, and that was measured
+//!
+//! `#[inline]` on the equivalent methods one layer down, in [`crate::batch`],
+//! bought two to three times the throughput, and it does not transfer up here.
+//! Measured from a consumer crate against the pinned library: as this file
+//! stands, 89.1 ns per record; with `#[inline]` on the four obvious methods,
+//! 92.0; with `#[inline(always)]`, 93.6. One allocation plus a 120 byte enum
+//! dwarfs the call, so all the attribute does is cost the optimiser its
+//! judgement. The same goes for `item.rs`, `document.rs` and `sys.rs`.
 
 use std::iter::FusedIterator;
 

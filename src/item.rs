@@ -42,6 +42,13 @@
 //! consumer writing their own test. [`Default`] is the answer for the seven
 //! geometry structs and [`Warning::new`] for the eighth: build one, set the
 //! fields you care about, and a field added later leaves your test compiling.
+//!
+//! # No `#[inline]`
+//!
+//! Measured and rejected: [`crate::PrimitiveStream`]'s module documentation has
+//! the numbers. It bought two to three times the throughput one layer down in
+//! [`crate::batch`] and costs about 3% here, because an allocation and a 120
+//! byte enum dwarf the call.
 
 use core::fmt;
 
@@ -441,6 +448,31 @@ impl Warning {
     }
 }
 
+impl fmt::Display for Warning {
+    /// The code, its name, the message, and the entity when there is one.
+    ///
+    /// ```
+    /// use acadsharp_rs::{ItemHandle, Warning, WarningCode};
+    ///
+    /// let warning = Warning::new(WarningCode::UNRESOLVED_BLOCK, "BLOCK_42");
+    /// assert_eq!(warning.to_string(), "unresolved block (105): BLOCK_42");
+    ///
+    /// let mut about = Warning::new(WarningCode::HATCH_PATTERN_ONLY, "no loop");
+    /// about.entity = Some(ItemHandle::new(7));
+    /// assert_eq!(
+    ///     about.to_string(),
+    ///     "hatch pattern only (103): no loop, on entity 7"
+    /// );
+    /// ```
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)?;
+        match self.entity {
+            Some(entity) => write!(f, ", on entity {entity}"),
+            None => Ok(()),
+        }
+    }
+}
+
 /// One thing out of the decode stream.
 ///
 /// The frame records are here as well as the geometry, because
@@ -508,7 +540,39 @@ impl Item {
     /// outlive the call that refills it, and making that a copy at a named
     /// point beats making it a lifetime a caller has to thread through their
     /// own code.
-    pub(crate) fn from_record(record: &Record<'_>) -> Self {
+    ///
+    /// Public because a caller who already holds bytes otherwise has no route
+    /// from [`crate::batch`], which is the borrowed layer, to these owned
+    /// types: they could read a [`Record`] and then had to write the copy
+    /// themselves. There is an `impl From<&Record<'_>> for Item` beside it,
+    /// which is the same thing spelled for generic code.
+    ///
+    /// ```
+    /// use acadsharp_rs::batch::BatchReader;
+    /// use acadsharp_rs::Item;
+    ///
+    /// # let mut bytes = Vec::new();
+    /// # bytes.extend_from_slice(b"VACB");
+    /// # bytes.extend_from_slice(&2u16.to_le_bytes());
+    /// # bytes.extend_from_slice(&1u16.to_le_bytes());
+    /// # bytes.extend_from_slice(&24u32.to_le_bytes());
+    /// # bytes.extend_from_slice(&1u16.to_le_bytes());
+    /// # bytes.extend_from_slice(&0u16.to_le_bytes());
+    /// # bytes.extend_from_slice(&24u32.to_le_bytes());
+    /// # bytes.extend_from_slice(&2u32.to_le_bytes());
+    /// # bytes.extend_from_slice(&1032u32.to_le_bytes());
+    /// # bytes.extend_from_slice(&0u64.to_le_bytes());
+    /// let reader = BatchReader::new(&bytes)?;
+    /// let owned: Vec<Item> = reader
+    ///     .records()
+    ///     .map(|record| Ok(Item::from_record(&record?)))
+    ///     .collect::<Result<_, acadsharp_rs::batch::BatchError>>()?;
+    ///
+    /// assert_eq!(owned[0].record_type(), 1);
+    /// # Ok::<(), acadsharp_rs::batch::BatchError>(())
+    /// ```
+    #[must_use]
+    pub fn from_record(record: &Record<'_>) -> Self {
         match record {
             Record::DocumentBegin(d) => Self::DocumentBegin(*d),
             Record::ViewBegin(v) => Self::ViewBegin(View::from_record(v)),
@@ -575,6 +639,12 @@ impl Item {
             // that into a new wire record quietly arriving as `Unknown`, which
             // is the one failure mode nobody would notice.
         }
+    }
+}
+
+impl From<&Record<'_>> for Item {
+    fn from(record: &Record<'_>) -> Self {
+        Self::from_record(record)
     }
 }
 

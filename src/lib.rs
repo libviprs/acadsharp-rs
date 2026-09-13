@@ -155,15 +155,29 @@ pub mod ffi;
 #[allow(unsafe_code)]
 mod sys;
 
+// `#[doc(inline)]` on the three lines that re-export out of a public module.
+// Without it rustdoc renders nineteen of the most important types in this
+// crate as a bare link with no description, on the front page, next to the
+// ones re-exported out of a private module, which it inlines automatically and
+// which therefore get a sentence each. That difference is an artefact of where
+// a type happens to live and says nothing a reader wants to know.
+#[doc(inline)]
 pub use abi::{EXPECTED_ABI_FINGERPRINT, EXPECTED_ABI_VERSION, EXPECTED_WIRE_VERSION};
+#[doc(inline)]
 pub use batch::{DocumentBegin, DocumentEnd, ViewEnd};
-pub use cancel::CancelToken;
-pub use capabilities::Capabilities;
-pub use document::{Decoder, Document, Extents, View, ViewKind};
-pub use error::{Error, Result};
+#[doc(inline)]
 pub use item::{
     Arc, Circle, Ellipse, Item, ItemHandle, Line, Origin, Polyline, Primitive, Spline, Text,
     Warning, WarningCode,
 };
+
+/// The wire's own record numbers, which are the contract a consumer switches
+/// on. Re-exported here because [`Item::record_type`] hands one back and a
+/// caller should not have to reach into [`batch`] to name it.
+pub use batch::record_type;
+pub use cancel::CancelToken;
+pub use capabilities::Capabilities;
+pub use document::{Decoder, Document, Extents, View, ViewKind};
+pub use error::{Error, Result};
 pub use limits::Limits;
 pub use stream::PrimitiveStream;

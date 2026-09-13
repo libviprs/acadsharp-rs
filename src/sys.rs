@@ -14,8 +14,15 @@
 //! documents in every job rather than only in the one that links. A consumer
 //! cannot write `cfg(acadsharp_linked)` themselves, so the public surface
 //! stays the same shape either way and the absence of a library arrives as
-//! [`crate::Error::Unlinked`] rather than as a missing type. [`LINKED`] is
-//! what [`crate::Decoder::new`] asks before anything else.
+//! [`crate::Error::Unlinked`] rather than as a missing type. [`handshake`] is
+//! what [`crate::Decoder::new`] asks before anything else, and it is the half
+//! of the split that answers `Unlinked`.
+//!
+//! # No `#[inline]`
+//!
+//! Measured and rejected, with the numbers in `stream.rs`'s module docs: it
+//! bought two to three times the throughput in `batch` and costs about 3% at
+//! this layer, where one allocation and a 120 byte enum dwarf the call.
 
 use std::ptr;
 use std::sync::Arc;
