@@ -514,8 +514,7 @@ fn a_header_digest_that_is_not_the_vendored_headers_stops_the_plan() {
     );
     assert!(
         shown.contains("0502ac0f61611530ffffffffffffffffffffffffffffffffffffffffffffffff")
-            && shown
-                .contains("0502ac0f616115300fc52c84d99054e366a7ea520363f166d463b44c506233fa"),
+            && shown.contains("0502ac0f616115300fc52c84d99054e366a7ea520363f166d463b44c506233fa"),
         "and both digests, because the question the reader has is which side moved, and it said: \
          {shown}"
     );

@@ -794,7 +794,10 @@ fn plain_string_fields() -> Vec<(&'static str, Setter)> {
             "platform",
             Box::new(|raw: &mut Raw, v: String| raw.platform = Some(v)),
         ),
-        ("cpu", Box::new(|raw: &mut Raw, v: String| raw.cpu = Some(v))),
+        (
+            "cpu",
+            Box::new(|raw: &mut Raw, v: String| raw.cpu = Some(v)),
+        ),
     ];
     fields
 }
@@ -813,7 +816,10 @@ fn a_control_character_in_any_plain_string_field_is_refused_by_name() {
     for (field, set) in plain_string_fields() {
         for (value, why) in [
             ("3.7.1-viprs.1\ncargo::rustc-env=PWNED=yes", "a newline"),
-            ("3.7.1-viprs.1\rcargo::rustc-env=PWNED=yes", "a carriage return"),
+            (
+                "3.7.1-viprs.1\rcargo::rustc-env=PWNED=yes",
+                "a carriage return",
+            ),
             ("3.7.1\tviprs", "a tab"),
             ("3.7.1\u{7f}", "a DEL"),
             ("3.7.1\u{0}", "a NUL"),

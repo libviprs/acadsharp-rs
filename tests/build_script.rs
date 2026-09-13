@@ -883,7 +883,10 @@ fn an_ordinary_archive_root_with_a_space_in_it_still_works() {
     // survives one directive line, and a guard that refused it would break
     // somebody's checkout for nothing.
     let dir = scratch("spaced root");
-    let root = unpack_at(&dir.join("My Archives/acadsharp-linux-arm64"), &fixture("aarch64-unknown-linux-gnu"));
+    let root = unpack_at(
+        &dir.join("My Archives/acadsharp-linux-arm64"),
+        &fixture("aarch64-unknown-linux-gnu"),
+    );
     let run = Run::new(&dir).archive(&root).go(&dir);
 
     assert!(run.ok, "{}", run.everything());

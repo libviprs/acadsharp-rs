@@ -67,7 +67,7 @@
 //!    `DEP_ACADSHARP_NATIVE_LINK_KIND` and
 //!    `DEP_ACADSHARP_NATIVE_ARTIFACT_VERSION`:
 //!
-//!    ```no_run
+//!    ```text
 //!    // build.rs, in the crate that produces the binary
 //!    fn main() {
 //!        if let Ok(dir) = std::env::var("DEP_ACADSHARP_NATIVE_LIB_DIR") {
@@ -75,6 +75,10 @@
 //!        }
 //!    }
 //!    ```
+//!
+//!    Not a doctest, because it belongs to a different crate than this one.
+//!    CI writes exactly this file into a real downstream crate, builds it and
+//!    runs the binary, which is a better check than compiling it here would be.
 //!
 //!    They are set only when an archive resolved, so read them as a `Result`
 //!    and carry on without them. This bakes the build machine's path into the
