@@ -8,9 +8,14 @@ Callers get Rust types. Neither .NET nor ACadSharp internals reach them.
 ## Status
 
 Early. What exists is the raw `ffi` module, a byte-for-byte copy of the frozen
-`viprs_acadsharp.h` under `native/`, and the handshake that refuses a library
-built against a different header. The safe API on top of it is still being
-built.
+`viprs_acadsharp.h` under `native/`, and `abi`, which holds the constants
+generated from that header and the handshake that refuses a library built
+against a different one. The safe API on top of it is still being built.
+
+`abi::check` compares the two numbers and is always there. `abi::handshake` is
+the wrapper that asks the library for them, so it exists only in a build that
+linked one (and in the documentation, which is how it stays visible on
+docs.rs).
 
 The ABI version, the wire version and the fingerprint are generated from the
 vendored header's bytes at build time, so none of the three is typed anywhere in
