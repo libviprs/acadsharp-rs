@@ -267,7 +267,12 @@ struct Core {
 
 impl Core {
     fn new(dwg: Dwg, initial_batch_bytes: usize, max_batch_bytes: usize) -> Self {
-        let initial = initial_batch_bytes.max(BATCH_HEADER_LEN);
+        // The ceiling wins. It used to be the other way round,
+        // `max_batch_bytes.max(initial)`, which meant a caller who lowered the
+        // ceiling and left the starting size alone got the starting size as
+        // their ceiling.
+        let max = max_batch_bytes.max(BATCH_HEADER_LEN);
+        let initial = initial_batch_bytes.clamp(BATCH_HEADER_LEN, max);
         Self {
             buf: vec![0u8; initial],
             batch_len: 0,
@@ -276,7 +281,7 @@ impl Core {
             empty_batches_in_a_row: 0,
             finished: false,
             failed: false,
-            max_batch_bytes: max_batch_bytes.max(initial),
+            max_batch_bytes: max,
             dwg,
             records_seen: 0,
             warnings_seen: 0,

@@ -85,6 +85,59 @@ fn an_initial_size_below_the_batch_header_is_raised_to_it() {
 }
 
 #[test]
+fn lowering_the_ceiling_lowers_the_starting_size_rather_than_raising_the_ceiling() {
+    // Setting only the ceiling used to leave the default 64 KiB starting size
+    // in place and quietly move the ceiling up to meet it. Two things were
+    // wrong with that: a caller who set a ceiling did not get one, and the two
+    // getters disagreed with what the stream would actually do.
+    let decoder = Decoder::new()
+        .expect("the handshake passes")
+        .with_max_batch_bytes(1024);
+    assert_eq!(
+        decoder.max_batch_bytes(),
+        1024,
+        "the ceiling is the ceiling"
+    );
+    assert_eq!(
+        decoder.initial_batch_bytes(),
+        1024,
+        "and the starting size came down to meet it, rather than the other way round"
+    );
+
+    let document = Document::open_bytes(&decoder, &synthetic(), &Limits::new()).expect("it opens");
+    let mut stream = document.decode(0).expect("it decodes");
+    assert_eq!(
+        stream.max_batch_bytes(),
+        1024,
+        "the stream inherited the ceiling the getter reported"
+    );
+    assert!(
+        stream.buffer_len() <= 1024,
+        "and it started at or below it, not at {}",
+        stream.buffer_len()
+    );
+    let items = (&mut stream).filter(|item| item.is_ok()).count();
+    assert_eq!(items, 17, "1 KiB is plenty for this document");
+    assert!(stream.is_complete());
+
+    // The order the two setters are called in must not change the answer.
+    let other_way = Decoder::new()
+        .expect("the handshake passes")
+        .with_initial_batch_bytes(64 * 1024)
+        .with_max_batch_bytes(1024);
+    assert_eq!(other_way.initial_batch_bytes(), 1024);
+    assert_eq!(other_way.max_batch_bytes(), 1024);
+
+    // And a ceiling below the twelve byte batch header is raised to it, because
+    // twelve bytes is the smallest thing that can be a batch at all.
+    let silly = Decoder::new()
+        .expect("the handshake passes")
+        .with_max_batch_bytes(4);
+    assert_eq!(silly.max_batch_bytes(), 12);
+    assert_eq!(silly.initial_batch_bytes(), 12);
+}
+
+#[test]
 fn a_batch_past_the_crate_side_ceiling_is_a_typed_refusal_and_not_an_allocation() {
     let decoder = Decoder::new()
         .expect("the handshake passes")

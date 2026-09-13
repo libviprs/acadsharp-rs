@@ -105,7 +105,18 @@ impl Decoder {
     /// round trips. Anything below the twelve byte batch header is raised to
     /// it: a capacity in `1..=11` comes back asking for 12, which is the
     /// smallest legal batch rather than the size of the next one, and a caller
-    /// who started there would spend its one retry learning that.
+    /// who started there would spend its one retry learning that. Anything
+    /// above [`Decoder::with_max_batch_bytes`] is lowered to that, because a
+    /// ceiling the starting size walks straight through is not a ceiling.
+    ///
+    /// Read this as a throughput control rather than as a memory one, which is
+    /// the opposite of how it sounds. Measured against the pinned library: the
+    /// library packs a batch to fit whatever capacity it is offered, so from 12
+    /// bytes the buffer goes 36, 84, 204, 252 and the whole document takes 28
+    /// native round trips, while at 64 KiB the document is one batch and one
+    /// call. It never grows for throughput, only when a single record does not
+    /// fit. So a caller who sets 12 to save memory buys 132 times the FFI
+    /// calls, permanently, and gains about 64 KiB.
     #[must_use]
     pub const fn with_initial_batch_bytes(mut self, bytes: usize) -> Self {
         self.initial_batch_bytes = if bytes < batch::BATCH_HEADER_LEN {
@@ -123,6 +134,13 @@ impl Decoder {
     /// vertex, is 32 MB on its own. So the growth is capped and a batch past
     /// the cap is [`Error::BatchTooLarge`] rather than an allocation nobody
     /// asked for.
+    ///
+    /// This is the ceiling, so it wins: a starting size above it is lowered to
+    /// it rather than raising it. Setting this alone, without touching
+    /// [`Decoder::with_initial_batch_bytes`], used to leave the default 64 KiB
+    /// starting size in place and quietly move the ceiling up to meet it, so
+    /// `with_max_batch_bytes(1024)` gave a 64 KiB ceiling and the two getters
+    /// disagreed with each other about what was going to happen.
     #[must_use]
     pub const fn with_max_batch_bytes(mut self, bytes: usize) -> Self {
         self.max_batch_bytes = bytes;
@@ -130,15 +148,28 @@ impl Decoder {
     }
 
     /// The size a new stream's buffer starts at.
+    ///
+    /// Reconciled with [`Decoder::max_batch_bytes`] rather than reported raw,
+    /// so this is the number a stream will really start at whichever order the
+    /// two setters were called in.
     #[must_use]
     pub const fn initial_batch_bytes(&self) -> usize {
-        self.initial_batch_bytes
+        let ceiling = self.max_batch_bytes();
+        if self.initial_batch_bytes > ceiling {
+            ceiling
+        } else {
+            self.initial_batch_bytes
+        }
     }
 
     /// The largest single batch this crate will hold.
     #[must_use]
     pub const fn max_batch_bytes(&self) -> usize {
-        self.max_batch_bytes
+        if self.max_batch_bytes < batch::BATCH_HEADER_LEN {
+            batch::BATCH_HEADER_LEN
+        } else {
+            self.max_batch_bytes
+        }
     }
 }
 
@@ -215,8 +246,11 @@ impl Document {
         Self {
             handle,
             capabilities: decoder.capabilities.clone(),
-            initial_batch_bytes: decoder.initial_batch_bytes,
-            max_batch_bytes: decoder.max_batch_bytes,
+            // Through the accessors, so the document carries the two numbers
+            // already reconciled with each other and a reader of the two
+            // getters is reading what will actually happen.
+            initial_batch_bytes: decoder.initial_batch_bytes(),
+            max_batch_bytes: decoder.max_batch_bytes(),
         }
     }
 
