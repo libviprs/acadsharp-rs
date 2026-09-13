@@ -8,6 +8,14 @@
 //! script and the script is driven here. The job's cross-repo half is proven on
 //! a real Actions run instead, now that `acadsharp-rs-tests` carries the
 //! `acadsharp-rs = { path = "../acadsharp-rs" }` dependency back to this crate.
+#![cfg(unix)]
+// The whole file shells out to `tools/suite_pin_check.sh` and checks its exit
+// codes and its file mode, so on Windows every test here fails for a reason
+// that has nothing to do with the rule under test. CI is `ubuntu-latest` and
+// the script only ever runs on a runner, so gating the file is honest rather
+// than a gap: there is no Windows behaviour being skipped, only a shell that
+// does not exist.
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -93,19 +101,16 @@ fn the_script_is_executable() {
         "tools/suite_pin_check.sh does not exist at {}",
         script.display()
     );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = script
-            .metadata()
-            .expect("stat the script")
-            .permissions()
-            .mode();
-        assert!(
-            mode & 0o111 != 0,
-            "tools/suite_pin_check.sh is not executable (mode {mode:o}); the job calls it directly"
-        );
-    }
+    use std::os::unix::fs::PermissionsExt;
+    let mode = script
+        .metadata()
+        .expect("stat the script")
+        .permissions()
+        .mode();
+    assert!(
+        mode & 0o111 != 0,
+        "tools/suite_pin_check.sh is not executable (mode {mode:o}); the job calls it directly"
+    );
 }
 
 #[test]
