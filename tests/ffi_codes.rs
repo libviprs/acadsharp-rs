@@ -41,7 +41,7 @@ fn codes_from_header() -> BTreeMap<String, u64> {
             continue;
         }
         seen_a_define = true;
-        let defines = common::integer_defines(trimmed);
+        let defines = common::header::integer_defines(trimmed);
         for (name, value) in defines {
             assert!(
                 out.insert(name.clone(), value).is_none(),

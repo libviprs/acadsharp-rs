@@ -4,10 +4,18 @@
 //! frozen header, because that file is the contract. A test that hard-codes
 //! what the header says is a test that keeps agreeing with itself after the
 //! header moves, which is the one direction that does damage.
+//!
+//! The parsing itself lives in `build/header.rs` and is compiled in here, so
+//! the tests and `build.rs` read the header through exactly the same code. A
+//! second copy over here is a copy that can agree with a wrong answer, and it
+//! did: see that module's own documentation.
 
 #![allow(dead_code)]
 
 use std::path::PathBuf;
+
+#[path = "../../build/header.rs"]
+pub mod header;
 
 /// Where the vendored header lives, resolved from the manifest directory so the
 /// test does not care what the working directory is.
@@ -26,69 +34,35 @@ pub fn header_text() -> String {
     })
 }
 
-/// Drops every `/* ... */` comment, including the multi-line ones, and leaves
-/// everything else alone.
-///
-/// The header puts a comment on most struct fields and several of them wrap
-/// over two lines, so a line-oriented filter gets the second half of one
-/// wrong. This is a two-state machine instead, which cannot.
-pub fn strip_block_comments(source: &str) -> String {
-    let chars: Vec<char> = source.chars().collect();
-    let mut out = String::with_capacity(source.len());
-    let mut i = 0;
-    let mut in_comment = false;
-    while i < chars.len() {
-        if in_comment {
-            if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
-                in_comment = false;
-                i += 2;
-            } else {
-                // Keep newlines so line numbers and blank-line structure survive.
-                if chars[i] == '\n' {
-                    out.push('\n');
-                }
-                i += 1;
-            }
-        } else if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
-            in_comment = true;
-            i += 2;
-        } else {
-            out.push(chars[i]);
-            i += 1;
-        }
-    }
-    assert!(
-        !in_comment,
-        "the vendored header has an unterminated block comment, so this parser cannot trust anything it found"
-    );
-    out
+/// What a refusal from the header parser should call the file, so a message
+/// says which one to go and look at.
+pub fn header_name() -> String {
+    "native/viprs_acadsharp.h".to_string()
 }
 
-/// Every `#define NAME VALUE` in `source`, in the order they appear, with the
-/// `u` suffix on the value already dropped.
+/// Runs `f`, expects it to refuse, and hands back what it said.
 ///
-/// Only integer defines are recognised. A define whose value is not a decimal
-/// number is a panic rather than a skip, because a silently skipped line is
-/// how a parser ends up reporting an empty set and passing.
-pub fn integer_defines(source: &str) -> Vec<(String, u64)> {
-    let mut out = Vec::new();
-    for line in source.lines() {
-        let line = line.trim();
-        let Some(rest) = line.strip_prefix("#define ") else {
-            continue;
-        };
-        let mut parts = rest.split_whitespace();
-        let Some(name) = parts.next() else { continue };
-        let Some(value) = parts.next() else {
-            // `#define VIPRS_ACADSHARP_H` and friends: an include guard, not a
-            // constant. Nothing to compare, so there is nothing to record.
-            continue;
-        };
-        let digits = value.trim_end_matches(['u', 'U']);
-        let parsed = digits.parse::<u64>().unwrap_or_else(|e| {
-            panic!("`#define {name} {value}` is not a decimal integer and this parser only handles those: {e}")
-        });
-        out.push((name.to_string(), parsed));
+/// The refusals these parsers hand out are panics, because a build script has
+/// nowhere else to put a refusal. A `#[should_panic]` attribute would check
+/// the message by substring and say nothing about which part matched, so this
+/// returns the message instead and lets the test assert on it properly. The
+/// panic hook goes quiet for the duration, or a passing test prints a
+/// backtrace and reads like a failing one.
+pub fn refusal(what: &str, f: impl FnOnce() + std::panic::UnwindSafe) -> String {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let outcome = std::panic::catch_unwind(f);
+    std::panic::set_hook(previous);
+
+    let payload = match outcome {
+        Ok(()) => panic!("I expected {what} to be refused, and it went through without a word"),
+        Err(payload) => payload,
+    };
+    if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else {
+        panic!("{what} was refused and the refusal carried no message at all")
     }
-    out
 }

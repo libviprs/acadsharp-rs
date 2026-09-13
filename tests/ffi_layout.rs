@@ -73,7 +73,7 @@ fn round_up(value: usize, align: usize) -> usize {
 /// not picked up here, which is right: they have no layout to check.
 fn structs_from_header() -> Vec<HeaderStruct> {
     let text = common::header_text();
-    let source = common::strip_block_comments(&text);
+    let source = common::header::strip_block_comments(&text);
     let lines: Vec<&str> = source.lines().collect();
 
     let mut out = Vec::new();
