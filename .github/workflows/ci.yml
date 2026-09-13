@@ -210,3 +210,7 @@ jobs:
       # `--all-targets` skips doctests, so they need their own line or the
       # examples in the public API documentation are compiled by nothing.
       - run: cargo test --doc
+      # The shipped configuration, which nothing else here runs. Debug and
+      # release disagree on the wrap vectors, so the two cheapest targets that
+      # care go through release as well. They take under a second.
+      - run: cargo test --release --test malformed --test sweeps
