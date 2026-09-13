@@ -460,3 +460,63 @@ fn the_iteration_budget_allows_every_minimum_sized_record() {
         "the budget must not be tighter than the wire allows"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The rest of the public surface
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_expanded_insert_flag_is_read_off_prologue_bit_zero() {
+    // Bit 0 means the record came from expanding a nested insertion. Every
+    // other bit is carried verbatim rather than masked off.
+    let record = common::line_flagged(7, 0xFFFF_FFFF, [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+    match read_one(&Builder::new().record(record).build()) {
+        Record::Line(l) => {
+            assert!(l.prologue.from_expanded_insert());
+            assert_eq!(l.prologue.flags, 0xFFFF_FFFF);
+            assert_eq!(l.prologue.item_handle, 7);
+        }
+        other => panic!("expected a Line, got {other:?}"),
+    }
+    let plain = common::line_flagged(7, 0xFFFF_FFFE, [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+    match read_one(&Builder::new().record(plain).build()) {
+        Record::Line(l) => assert!(!l.prologue.from_expanded_insert()),
+        other => panic!("expected a Line, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_borrowed_views_iterate_forwards_backwards_and_by_reference() {
+    match read_one(&Builder::new().record(canonical(4)).build()) {
+        Record::Polyline(p) => {
+            let forwards: Vec<[f64; 3]> = p.vertices.iter().collect();
+            let backwards: Vec<[f64; 3]> = p.vertices.iter().rev().collect();
+            assert_eq!(forwards.len(), 4);
+            assert_eq!(backwards[0], forwards[3]);
+            let by_ref: Vec<[f64; 3]> = (&p.vertices).into_iter().collect();
+            assert_eq!(by_ref, forwards);
+            assert_eq!(p.vertices.as_bytes().len(), 4 * 24);
+            assert_eq!(p.bulges.as_bytes().len(), 4 * 8);
+            let bulges_back: Vec<f64> = p.bulges.iter().rev().collect();
+            assert_eq!(bulges_back[0], probe_value(4, 18));
+            assert_eq!(p.vertices.iter().size_hint(), (4, Some(4)));
+        }
+        other => panic!("expected a Polyline, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_reader_reports_where_it_is_in_the_batch() {
+    let batch = Builder::new()
+        .records(&[canonical(3), canonical(5)])
+        .build();
+    let reader = BatchReader::new(&batch).expect("parses");
+    assert_eq!(reader.payload().len(), 72 + 96);
+    let mut records = reader.records();
+    assert_eq!(records.offset(), 12);
+    records.next().expect("a Line").expect("it parses");
+    assert_eq!(records.offset(), 12 + 72);
+    records.next().expect("an Arc").expect("it parses");
+    assert_eq!(records.offset(), 12 + 72 + 96);
+    assert!(records.next().is_none());
+}

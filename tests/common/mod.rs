@@ -240,7 +240,14 @@ pub fn view_begin_raw(
 
 #[must_use]
 pub fn line(handle: u64, coords: [f64; 6]) -> Vec<u8> {
-    let mut p = prologue(handle, 0);
+    line_flagged(handle, 0, coords)
+}
+
+/// The same record with the prologue's `flags` word under the caller's
+/// control, so bit 0 (from an expanded nested insertion) can be exercised.
+#[must_use]
+pub fn line_flagged(handle: u64, flags: u32, coords: [f64; 6]) -> Vec<u8> {
+    let mut p = prologue(handle, flags);
     push_f64s(&mut p, &coords);
     frame(3, &p)
 }
