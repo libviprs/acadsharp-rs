@@ -90,6 +90,36 @@ mod against_the_library {
     }
 
     #[test]
+    fn a_block_depth_past_the_boundarys_own_field_is_refused_and_not_truncated() {
+        // `max_block_depth` is the one bound the header declares as a
+        // `uint32_t` while every bound up here is a `u64`, so that a later
+        // widening of the field is not a change to the public API. The
+        // narrowing has to be a refusal: `(1 << 32) + 64` truncated is 64,
+        // which is the documented default, so the failure would look exactly
+        // like a caller who never set the bound at all.
+        let decoder = Decoder::new().expect("the handshake passes");
+
+        // The positive control. The largest value the field can hold goes
+        // across, so a refusal below is the narrowing check and not the
+        // library disliking a large bound.
+        let at_the_edge = Limits::new().with_max_block_depth(u64::from(u32::MAX));
+        assert!(
+            Document::open_bytes(&decoder, SYNTHETIC, &at_the_edge).is_ok(),
+            "u32::MAX fits the field and has to be accepted"
+        );
+
+        for past in [u64::from(u32::MAX) + 1, u64::MAX] {
+            let bounded = Limits::new().with_max_block_depth(past);
+            assert_eq!(
+                Document::open_bytes(&decoder, SYNTHETIC, &bounded).err(),
+                Some(Error::InvalidArgument),
+                "a block depth of {past} does not fit a uint32_t, and truncating it would \
+                 silently run the decode under a bound the caller never asked for"
+            );
+        }
+    }
+
+    #[test]
     fn a_polyline_bound_under_the_probes_own_vertex_count_ends_the_decode() {
         let decoder = Decoder::new().expect("the handshake passes");
 
