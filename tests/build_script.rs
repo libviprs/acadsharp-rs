@@ -210,6 +210,13 @@ impl Run {
         self
     }
 
+    /// A cargo home of somebody else's choosing, which is what the cache-root
+    /// cases below are about.
+    fn cargo_home(mut self, home: &Path) -> Self {
+        self.cargo_home = Some(home.to_path_buf());
+        self
+    }
+
     fn go(self, scratch: &Path) -> Outcome {
         let out_dir = scratch.join("out");
         std::fs::create_dir_all(&out_dir).expect("I own this directory");
@@ -722,4 +729,155 @@ fn nothing_in_the_build_half_of_this_crate_can_fetch_anything() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Nothing out of a tarball, a symlink name or an environment variable becomes
+// a directive of its own
+// ---------------------------------------------------------------------------
+
+/// Every `cargo::` line whose key is one this build script never prints.
+///
+/// That is the shape of the whole class: one directive splits into two and the
+/// second one is somebody else's. Looking for the injected key rather than for
+/// a specific string means a new way of spelling the same trick still fails
+/// this.
+fn foreign_directives(run: &Outcome) -> Vec<&str> {
+    run.stdout
+        .lines()
+        .filter(|l| {
+            l.starts_with("cargo::rustc-env=")
+                || l.starts_with("cargo::rustc-cdylib-link-arg=")
+                || l.contains("totally-bogus")
+                || l.contains("PWNED")
+        })
+        .collect()
+}
+
+#[test]
+fn an_artifact_version_carrying_a_cargo_directive_stops_the_build() {
+    // Measured before the check existed. `build.rs` prints
+    // `cargo::metadata=artifact_version={}`, so a newline in that string ends
+    // the metadata line and starts one the tarball wrote, and cargo obeys it.
+    // The library-name check next door was thorough and never looked at this
+    // field.
+    let dir = scratch("poisoned-artifact-version");
+    let text = mutated(
+        "aarch64-unknown-linux-gnu",
+        "\"artifact_version\": \"3.7.1-viprs.1\"",
+        "\"artifact_version\": \"3.7.1-viprs.1\\ncargo::rustc-env=PWNED=yes\"",
+    );
+    let root = unpack(&dir, &text);
+    let run = Run::new(&dir).archive(&root).go(&dir);
+
+    assert!(
+        !run.ok,
+        "this is supposed to stop the build: {}",
+        run.everything()
+    );
+    assert!(
+        foreign_directives(&run).is_empty(),
+        "a directive out of the manifest reached cargo: {:?} in {}",
+        foreign_directives(&run),
+        run.everything()
+    );
+    assert!(
+        run.stderr.contains("artifact_version"),
+        "the refusal has to name the field: {}",
+        run.everything()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_archive_root_whose_own_name_carries_a_newline_stops_the_build() {
+    // The root check used to run on `root.canonicalize().unwrap_or(root)`,
+    // and canonicalising is exactly what resolves a symlink away. So a link
+    // whose own name held a newline pointed at a perfectly clean directory,
+    // passed the check, and then the warning printed the raw variable:
+    //
+    //     cargo::warning=... ACADSHARP_NATIVE_DIR, which is /tmp/i3/link
+    //     cargo::rustc-link-arg=--totally-bogus, and the cache at ...
+    //
+    // Measured, exit 0.
+    let dir = scratch("symlinked-root");
+    let clean = dir.join("clean-archive-root");
+    std::fs::create_dir_all(&clean).expect("I own this directory");
+    let link = dir.join("link\ncargo::rustc-link-arg=--totally-bogus");
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(&clean, &link).expect("I own this directory");
+
+    let run = Run::new(&dir).archive(&link).go(&dir);
+
+    assert!(
+        !run.ok,
+        "this is supposed to stop the build: {}",
+        run.everything()
+    );
+    assert!(
+        foreign_directives(&run).is_empty(),
+        "a directive out of the variable reached cargo: {:?} in {}",
+        foreign_directives(&run),
+        run.everything()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_archive_root_that_carries_a_newline_and_resolves_to_nothing_stops_the_build() {
+    // The half that already worked, kept as the control: with nothing to
+    // canonicalise the raw path stays raw and the check sees it. Both arms
+    // have to refuse, or the fix is only about symlinks.
+    let dir = scratch("newline-root");
+    let root = dir.join("nowhere\ncargo::rustc-link-arg=--totally-bogus");
+    let run = Run::new(&dir).archive(&root).go(&dir);
+
+    assert!(
+        !run.ok,
+        "this is supposed to stop the build: {}",
+        run.everything()
+    );
+    assert!(
+        foreign_directives(&run).is_empty(),
+        "{:?} in {}",
+        foreign_directives(&run),
+        run.everything()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_cargo_home_carrying_a_cargo_directive_stops_the_build() {
+    // The other route, and the one nothing checked at all. With
+    // `ACADSHARP_NATIVE_DIR` unset the build script prints the cache location
+    // into the same warning, and that path is `$CARGO_HOME/acadsharp-native`.
+    let dir = scratch("poisoned-cargo-home");
+    let home = dir.join("home\ncargo::rustc-link-arg=--totally-bogus-cache");
+    std::fs::create_dir_all(&home).expect("I own this directory");
+    let run = Run::new(&dir).cargo_home(&home).go(&dir);
+
+    assert!(
+        !run.ok,
+        "this is supposed to stop the build: {}",
+        run.everything()
+    );
+    assert!(
+        foreign_directives(&run).is_empty(),
+        "a directive out of CARGO_HOME reached cargo: {:?} in {}",
+        foreign_directives(&run),
+        run.everything()
+    );
+}
+
+#[test]
+fn an_ordinary_archive_root_with_a_space_in_it_still_works() {
+    // The positive control for all four above. A path with a space in it
+    // survives one directive line, and a guard that refused it would break
+    // somebody's checkout for nothing.
+    let dir = scratch("spaced root");
+    let root = unpack_at(&dir.join("My Archives/acadsharp-linux-arm64"), &fixture("aarch64-unknown-linux-gnu"));
+    let run = Run::new(&dir).archive(&root).go(&dir);
+
+    assert!(run.ok, "{}", run.everything());
+    assert!(run.has_cfg("acadsharp_linked"), "{}", run.everything());
 }

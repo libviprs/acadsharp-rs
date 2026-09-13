@@ -105,6 +105,10 @@ fn validate(raw: Raw) -> Result<manifest::LinkInfo, LinkInfoError> {
 /// that makes its rule fire.
 type Case = (&'static str, Box<dyn Fn(&mut Raw)>);
 
+/// The same thing for a table that has a value to put in as well as a field to
+/// put it in.
+type Setter = Box<dyn Fn(&mut Raw, String)>;
+
 fn refused(raw: Raw, what: &str) -> LinkInfoError {
     match validate(raw) {
         Ok(info) => panic!("I expected {what} to be refused, and it parsed as {info:?}"),
@@ -731,4 +735,115 @@ fn an_ordinary_archive_root_is_not_refused() {
     let root = PathBuf::from("/home/someone/My Archives/acadsharp-linux-arm64");
     manifest::check_archive_root(&root, &root.join("metadata").join("LINKINFO.json"))
         .expect("a path with a space in it is a path");
+}
+
+// ---------------------------------------------------------------------------
+// The seven plain string fields, which reach cargo the same way the names do
+// ---------------------------------------------------------------------------
+
+/// The seven fields nothing used to look at, and the edit that poisons each.
+///
+/// `artifact_version` is the live one, because `build.rs` prints
+/// `cargo::metadata=artifact_version={}` and cargo turns that into
+/// `DEP_ACADSHARP_NATIVE_ARTIFACT_VERSION` for every downstream build script.
+/// The rest are provenance, and provenance still lands in a refusal message
+/// that somebody's terminal renders.
+fn plain_string_fields() -> Vec<(&'static str, Setter)> {
+    let fields: Vec<(&'static str, Setter)> = vec![
+        (
+            "artifact_version",
+            Box::new(|raw: &mut Raw, v: String| raw.artifact_version = Some(v)),
+        ),
+        (
+            "acadsharp_version",
+            Box::new(|raw: &mut Raw, v: String| raw.acadsharp_version = Some(v)),
+        ),
+        (
+            "acadsharp_commit",
+            Box::new(|raw: &mut Raw, v: String| raw.acadsharp_commit = Some(v)),
+        ),
+        (
+            "dotnet_sdk",
+            Box::new(|raw: &mut Raw, v: String| raw.dotnet_sdk = Some(v)),
+        ),
+        (
+            "target",
+            Box::new(|raw: &mut Raw, v: String| raw.target = Some(v)),
+        ),
+        (
+            "platform",
+            Box::new(|raw: &mut Raw, v: String| raw.platform = Some(v)),
+        ),
+        ("cpu", Box::new(|raw: &mut Raw, v: String| raw.cpu = Some(v))),
+    ];
+    fields
+}
+
+#[test]
+fn a_control_character_in_any_plain_string_field_is_refused_by_name() {
+    // Measured against the reader before this check existed: a manifest whose
+    // `artifact_version` was `"3.7.1-viprs.1\ncargo::rustc-env=PWNED=yes"`
+    // validated clean and the build script printed
+    //
+    //     cargo::metadata=artifact_version=3.7.1-viprs.1
+    //     cargo::rustc-env=PWNED=yes
+    //
+    // as two directives, the second one chosen by the tarball. The library
+    // name check next door was thorough and simply never looked at these seven.
+    for (field, set) in plain_string_fields() {
+        for (value, why) in [
+            ("3.7.1-viprs.1\ncargo::rustc-env=PWNED=yes", "a newline"),
+            ("3.7.1-viprs.1\rcargo::rustc-env=PWNED=yes", "a carriage return"),
+            ("3.7.1\tviprs", "a tab"),
+            ("3.7.1\u{7f}", "a DEL"),
+            ("3.7.1\u{0}", "a NUL"),
+        ] {
+            let mut raw = certified();
+            set(&mut raw, value.to_string());
+            let error = refused(raw, &format!("{field} carrying {why}"));
+            let shown = error.to_string();
+            assert!(
+                shown.contains(field),
+                "the refusal for {why} in {field} has to name that field, and it said: {shown}"
+            );
+            assert!(
+                shown.contains("LINKINFO.json"),
+                "and it has to name the manifest, and it said: {shown}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_glob_in_a_version_pin_is_no_defence_here() {
+    // Worth stating because it is the reason this check is not somebody else's
+    // problem. A compatibility pin matching `artifact_version` against
+    // `3.7.1-viprs.*` is a glob, and `*` matches a newline, so a poisoned
+    // version string sails through the pin and out the other side.
+    let poisoned = "3.7.1-viprs.1\ncargo::rustc-env=PWNED=yes";
+    assert!(
+        poisoned.starts_with("3.7.1-viprs."),
+        "which is all a `3.7.1-viprs.*` glob ever asks"
+    );
+    let mut raw = certified();
+    raw.artifact_version = Some(poisoned.to_string());
+    refused(raw, "a version that a glob pin would happily match");
+}
+
+#[test]
+fn the_values_the_real_archives_carry_in_those_seven_fields_are_accepted() {
+    // The positive control. A check that refused a real manifest would pass
+    // every case above and link nothing.
+    for raw in [certified(), uncertified()] {
+        validate(raw).expect("the shipped manifests are manifests");
+    }
+    // And the characters that are not control characters stay legal: these are
+    // paths, versions and triples, not library names, so `.`, `-` and `+` are
+    // all ordinary here.
+    let raw = Raw {
+        artifact_version: Some("3.7.1-viprs.1+build.5".into()),
+        dotnet_sdk: Some("10.0.401-preview.2".into()),
+        ..certified()
+    };
+    validate(raw).expect("a version with a build metadata suffix is a version");
 }

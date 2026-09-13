@@ -39,11 +39,19 @@ fn manifest_path() -> PathBuf {
 }
 
 /// What the vendored header says, which is what a manifest has to agree with.
+///
+/// The digest is the whole 256 bits of it, not just the eight bytes the
+/// fingerprint carries. `native/NATIVE_HEADER_REV` names the commit the header
+/// came from and nothing in the crate checks that name; this comparison is the
+/// witness for it, because a header taken from a different commit hashes
+/// differently and an archive built against the old one still says so.
 fn expected() -> Expectations {
     Expectations {
         abi_version: 2,
         wire_version: 2,
         abi_fingerprint: 0x0502_ac0f_6161_1530,
+        header_file: "native/viprs_acadsharp.h".into(),
+        header_sha256: "0502ac0f616115300fc52c84d99054e366a7ea520363f166d463b44c506233fa".into(),
     }
 }
 
@@ -493,6 +501,162 @@ fn the_crates_own_source_never_names_the_symbol_the_samples_tell_you_to_force() 
                 "{} names NativeAOT_StaticInitialization, and forcing that symbol is the fix that \
                  looks obvious, cannot reach a downstream binary, and does not exist in .NET 10",
                 path.display()
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The whole digest, not the 64 bits of it the fingerprint carries
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_header_digest_that_is_not_the_vendored_headers_stops_the_plan() {
+    // `abi_fingerprint` is the first eight bytes of `abi_header_sha256`, so
+    // comparing it checks 64 of the digest's 256 bits and the other 192 were
+    // read, validated for shape, and then compared against nothing. This is
+    // the case that proves it: the fingerprint agrees, the manifest's own
+    // internal relationship agrees, and the header the archive was built
+    // against is still a different file.
+    let info = Raw {
+        abi_header_sha256: Some(
+            // Same first eight bytes, so the fingerprint check and the
+            // manifest's own prefix rule both pass.
+            "0502ac0f61611530ffffffffffffffffffffffffffffffffffffffffffffffff".into(),
+        ),
+        ..certified_raw()
+    }
+    .validate(&manifest_path())
+    .expect("that is a well formed digest, just not this header's");
+    let error = refused(
+        &info,
+        NOTHING,
+        "aarch64-unknown-linux-gnu",
+        "an archive built against a header with the same first eight bytes",
+    );
+    assert!(
+        matches!(error, PolicyError::HeaderDigestMismatch { .. }),
+        "it said: {error}"
+    );
+    let shown = error.to_string();
+    assert!(
+        shown.contains("LINKINFO.json") && shown.contains("native/viprs_acadsharp.h"),
+        "the refusal has to name both files or nobody knows which two disagree, and it said: \
+         {shown}"
+    );
+    assert!(
+        shown.contains("0502ac0f61611530ffffffffffffffffffffffffffffffffffffffffffffffff")
+            && shown
+                .contains("0502ac0f616115300fc52c84d99054e366a7ea520363f166d463b44c506233fa"),
+        "and both digests, because the question the reader has is which side moved, and it said: \
+         {shown}"
+    );
+}
+
+#[test]
+fn the_fingerprint_alone_would_have_let_that_one_through() {
+    // The measurement behind the test above, stated as one. A digest that
+    // shares its first eight bytes is a fingerprint match, so a policy that
+    // only compared fingerprints had nothing to say about it.
+    let manifest_digest = "0502ac0f61611530ffffffffffffffffffffffffffffffffffffffffffffffff";
+    let header_digest = "0502ac0f616115300fc52c84d99054e366a7ea520363f166d463b44c506233fa";
+    assert_eq!(manifest_digest[..16], header_digest[..16]);
+    assert_ne!(manifest_digest, header_digest);
+}
+
+#[test]
+fn the_shipped_digest_is_accepted() {
+    // The positive control, so a comparison that refused everything cannot
+    // pass the test above and link nothing.
+    let info = certified();
+    assert!(
+        choose(&info, NOTHING, "aarch64-unknown-linux-gnu").is_ok(),
+        "the shipped manifest's digest is the vendored header's digest"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Features are additive, so there is only one of them
+// ---------------------------------------------------------------------------
+
+#[test]
+fn there_is_no_link_shared_feature_anywhere() {
+    // Cargo features are additive: any crate in a graph may turn one on and
+    // none of them can turn another's off. `link-static` and `link-shared`
+    // were a pair that picked between two answers, so a graph where one
+    // dependency wanted shared and another wanted static unified both on and
+    // the build script panicked at neither author:
+    //
+    //     error: failed to run custom build command for `acadsharp-rs`
+    //     thread 'main' panicked at build.rs:400:5:
+    //     the `link-static` and `link-shared` features are both on ... Turn one off.
+    //
+    // Measured in a real three-crate graph. With no feature at all the plan is
+    // already the shared one, so `link-shared` carried the hazard and bought
+    // nothing, and it is gone. This is free to delete now and breaking after
+    // publication, which is why it happened now.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("it is committed");
+    assert!(
+        !manifest.contains("link-shared"),
+        "Cargo.toml still declares a link-shared feature, and two features that pick between two \
+         answers cannot both be on in a dependency graph that unified them"
+    );
+    for file in ["build.rs", "README.md", "src/lib.rs"] {
+        let text = std::fs::read_to_string(root.join(file)).expect("it is committed");
+        assert!(
+            !text.contains("link-shared") && !text.contains("LINK_SHARED"),
+            "{file} still names the link-shared feature"
+        );
+    }
+}
+
+#[test]
+fn link_static_is_the_only_feature_and_asking_for_nothing_is_the_shared_link() {
+    // The replacement for the conflict test: with one feature there is no
+    // combination left to refuse, and the default is what it always was.
+    let info = certified();
+    assert_eq!(
+        plan(&info, NOTHING, "aarch64-unknown-linux-gnu").kind,
+        LinkKind::Shared
+    );
+    assert_eq!(
+        plan(&info, STATIC, "aarch64-unknown-linux-gnu").kind,
+        LinkKind::Static
+    );
+}
+
+// ---------------------------------------------------------------------------
+// What a consumer has to do about the shared link, written down
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_docs_say_what_a_downstream_binary_needs() {
+    // The rpath goes out as `cargo::rustc-link-arg`, which binds to the
+    // emitting package's own targets and goes no further. So this crate's own
+    // tests run and a consumer's binary dies before `main`:
+    //
+    //     error while loading shared libraries: libacadsharp_native.so
+    //     exit 127
+    //
+    // Measured from a trivial downstream crate, twice, independently. Nothing
+    // in the crate can fix that from here, so the least it can do is say so
+    // where somebody will read it, and this is the guard that keeps the
+    // paragraph there.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for file in ["README.md", "src/lib.rs"] {
+        let text = std::fs::read_to_string(root.join(file)).expect("it is committed");
+        for needle in [
+            "DEP_ACADSHARP_NATIVE_LIB_DIR",
+            "LD_LIBRARY_PATH",
+            "rpath",
+            "link-static",
+        ] {
+            assert!(
+                text.contains(needle),
+                "{file} has to tell a consumer about {needle}: a binary that links this crate \
+                 shared and does none of the three dies at load with exit 127, and the crate's \
+                 own tests pass because the rpath it emits covers its own targets only"
             );
         }
     }
