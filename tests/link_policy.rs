@@ -116,7 +116,11 @@ const BOTH: Features = Features {
     link_shared: true,
 };
 
-fn choose(info: &LinkInfo, features: Features, target: &str) -> Result<policy::LinkPlan, PolicyError> {
+fn choose(
+    info: &LinkInfo,
+    features: Features,
+    target: &str,
+) -> Result<policy::LinkPlan, PolicyError> {
     policy::choose(info, features, target, expected(), &archive())
 }
 
@@ -203,12 +207,22 @@ fn the_shared_recipe_reads_the_shared_list_and_the_static_one_reads_the_static_l
     let info = certified();
     let shared = plan(&info, SHARED, "aarch64-unknown-linux-gnu");
     let statik = plan(&info, STATIC, "aarch64-unknown-linux-gnu");
-    assert!(shared.directives().contains(&"cargo::rustc-link-lib=m".to_string()));
     assert!(
-        !shared.directives().contains(&"cargo::rustc-link-lib=rt".to_string()),
+        shared
+            .directives()
+            .contains(&"cargo::rustc-link-lib=m".to_string())
+    );
+    assert!(
+        !shared
+            .directives()
+            .contains(&"cargo::rustc-link-lib=rt".to_string()),
         "`rt` is only in `static_system_libraries`, so the shared plan must not have it"
     );
-    assert!(statik.directives().contains(&"cargo::rustc-link-lib=rt".to_string()));
+    assert!(
+        statik
+            .directives()
+            .contains(&"cargo::rustc-link-lib=rt".to_string())
+    );
 }
 
 #[test]
@@ -259,7 +273,12 @@ fn link_static_on_an_uncertified_target_is_refused_and_names_the_target() {
     // target. False means the archive ships no `.a` at all, so there is
     // nothing to link and no way to fake one.
     let info = uncertified();
-    let error = refused(&info, STATIC, "aarch64-apple-darwin", "link-static on the mac archive");
+    let error = refused(
+        &info,
+        STATIC,
+        "aarch64-apple-darwin",
+        "link-static on the mac archive",
+    );
     assert!(
         matches!(error, PolicyError::StaticNotCertified { .. }),
         "it said: {error}"
@@ -274,7 +293,12 @@ fn link_static_on_an_uncertified_target_is_refused_and_names_the_target() {
 #[test]
 fn both_link_features_at_once_is_a_refusal() {
     let info = certified();
-    let error = refused(&info, BOTH, "aarch64-unknown-linux-gnu", "both link features");
+    let error = refused(
+        &info,
+        BOTH,
+        "aarch64-unknown-linux-gnu",
+        "both link features",
+    );
     assert!(
         matches!(error, PolicyError::FeatureConflict { .. }),
         "it said: {error}"
@@ -342,7 +366,12 @@ fn a_wire_version_that_is_not_the_headers_stops_the_plan() {
     }
     .validate(&manifest_path())
     .expect("3 is a number");
-    let error = refused(&info, NOTHING, "aarch64-unknown-linux-gnu", "wire_version 3");
+    let error = refused(
+        &info,
+        NOTHING,
+        "aarch64-unknown-linux-gnu",
+        "wire_version 3",
+    );
     assert!(
         matches!(error, PolicyError::WireVersionMismatch { .. }),
         "it said: {error}"
