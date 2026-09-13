@@ -83,10 +83,11 @@ can make for a consumer it cannot see. `libviprs` makes both downstream.
 ## Status
 
 The safe API above is in. Underneath it are `batch`, the zero-copy decoder for
-the VACB wire protocol, `ffi`, a transcription of the frozen
-`viprs_acadsharp.h` vendored under `native/`, and `abi`, which holds the
-constants generated from that header and the handshake that refuses a library
-built against a different one.
+the VACB wire protocol, and `abi`, which holds the constants generated from the
+frozen `viprs_acadsharp.h` vendored under `native/` and `abi::check`, the
+comparison that refuses a library built against a different one. The
+transcription of the header itself and every call into the library sit below
+both of those and are not part of what this crate promises.
 
 The ABI version, the wire version and the fingerprint are generated from the
 vendored header's bytes at build time, so none of the three is typed anywhere
@@ -111,7 +112,8 @@ beside this checkout, which is a different thing and is described below.
 To link the library and run the tests that call it, unpack a `libviprs-dep`
 archive and point `ACADSHARP_NATIVE_DIR` at the directory holding `lib/` and
 `metadata/LINKINFO.json`. Without that the crate still builds, checks and
-documents, and everything that reaches the library is compiled out.
+documents: the public surface is the same either way, the calls underneath it
+are what is compiled out, and `Decoder::new` answers `Error::Unlinked`.
 
 ## Boundary
 

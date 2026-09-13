@@ -111,10 +111,12 @@ pub enum Error {
     EmptyInput,
     /// This build of the crate has no native library behind it.
     ///
-    /// The crate compiles, documents and tests with no archive present, and
-    /// everything that reaches the library is compiled out. A consumer cannot
-    /// write that `cfg` themselves, so the surface stays the same either way
-    /// and the absence arrives as a value. [`Error::is_unlinked`] is the ask.
+    /// The crate compiles, documents and tests with no archive present. The
+    /// public surface does not change shape: every type and every function is
+    /// still here, the calls underneath them are what is compiled out, and the
+    /// first thing a caller does, [`crate::Decoder::new`], answers this. A
+    /// consumer cannot write `cfg(acadsharp_linked)` themselves, so the
+    /// absence has to arrive as a value. [`Error::is_unlinked`] is the ask.
     Unlinked,
     /// A result code the header does not declare.
     ///

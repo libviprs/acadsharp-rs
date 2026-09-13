@@ -30,14 +30,28 @@ use crate::stream::{BatchSource, NativeBatch};
 /// Asks the library which contract it was built against, and refuses it if
 /// that is not this one.
 ///
-/// The linked half is [`crate::abi::handshake`], which is the comparison plus
-/// the two calls that fetch its arguments. The unlinked half is the whole
-/// reason [`Error::Unlinked`] exists: a consumer cannot write
-/// `cfg(acadsharp_linked)` themselves, so the absence of a library arrives as
-/// a value they can match on rather than as a type that is not there.
+/// Call this before anything else that touches the library;
+/// [`crate::Decoder::new`] is the only thing that does. The comparison is
+/// [`crate::abi::check`], which lives up there because it is policy over two
+/// integers and is worth compiling, linting and testing in the three CI jobs
+/// that link nothing. Fetching the two integers is a call into the library, so
+/// it lives down here with every other one.
+///
+/// The unlinked half is the whole reason [`Error::Unlinked`] exists: a
+/// consumer cannot write `cfg(acadsharp_linked)` themselves, so the absence of
+/// a library arrives as a value they can match on rather than as a type that
+/// is not there.
 #[cfg(acadsharp_linked)]
 pub(crate) fn handshake() -> Result<()> {
-    crate::abi::handshake().map_err(Error::HeaderMismatch)
+    // SAFETY: `viprs_acad_abi_version` takes no arguments, returns a plain
+    // `uint32_t`, touches no memory the caller owns and is documented never to
+    // fail. The only precondition on it is that the symbol is linked, which is
+    // what the `cfg` above says.
+    let actual_version = unsafe { ffi::viprs_acad_abi_version() };
+    // SAFETY: the same, for a `uint64_t`.
+    let actual_fingerprint = unsafe { ffi::viprs_acad_abi_fingerprint() };
+
+    crate::abi::check(actual_version, actual_fingerprint).map_err(Error::HeaderMismatch)
 }
 
 /// See the linked half above.

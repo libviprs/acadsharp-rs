@@ -14,17 +14,24 @@
 //! re-exports the three constants so nothing downstream has to care that they
 //! moved.
 //!
-//! # Why [`handshake`] can be missing and [`check`] never is
+//! # Why the two calls are not here
 //!
-//! `handshake` calls the library, so it exists only when there is a library to
-//! call: `cfg(acadsharp_linked)`, which `build.rs` sets when it resolves an
-//! archive. Three of the four CI jobs never link one, and neither does
-//! docs.rs, so the gate also lets `cfg(doc)` through. Without that the one
-//! function a consumer has to call before anything else is the one function
-//! missing from the published documentation, which I measured: no
-//! `fn.handshake.html` was generated at all.
+//! This module holds no `unsafe` and links nothing. The two argument-free
+//! calls that fetch the library's version and fingerprint live in the private
+//! `sys` module with every other call, which is what makes "the one place
+//! `unsafe` lives outside `ffi` is a private module" a true sentence rather
+//! than a nearly true one, and what keeps `batch`, which is
+//! `forbid(unsafe_code)`, from depending on the unsafe half through here.
 //!
-//! `check` is ungated, takes the two numbers as arguments and calls nothing,
+//! There used to be a `handshake` in this module, gated on
+//! `any(acadsharp_linked, doc)`. The `doc` arm was there so docs.rs would show
+//! it, and the effect of that was docs.rs advertising a public function that a
+//! reader's own build, with no archive, does not have. That is exactly the
+//! failure [`crate::Error::Unlinked`] exists to remove, and the reason for the
+//! gate expired when [`crate::Decoder::new`] became the function a consumer
+//! actually calls.
+//!
+//! [`check`] is ungated, takes the two numbers as arguments and calls nothing,
 //! so the policy it holds is compiled, linted, documented and tested in every
 //! job rather than in the one that has an archive. That matters more than it
 //! sounds: before the split, changing the `&&` in the comparison to `||` broke
@@ -95,8 +102,8 @@ impl std::error::Error for HeaderMismatch {}
 ///
 /// This takes the two numbers rather than fetching them, so it is a plain
 /// function over two integers with no linkage, no `unsafe` and no environment
-/// behind it. [`handshake`] is the two-line wrapper that asks the library for
-/// them.
+/// behind it. Fetching them is `sys`'s job, because that is where every call
+/// into the library lives, and [`crate::Decoder::new`] is what runs the pair.
 ///
 /// ```
 /// use acadsharp_rs::abi::{self, EXPECTED_ABI_FINGERPRINT, EXPECTED_ABI_VERSION};
@@ -118,29 +125,4 @@ pub fn check(actual_version: u32, actual_fingerprint: u64) -> Result<(), HeaderM
         expected_fingerprint: EXPECTED_ABI_FINGERPRINT,
         actual_fingerprint,
     })
-}
-
-/// Asks the library which contract it was built against, and refuses it if that
-/// is not this one.
-///
-/// Call this before anything else that touches the library. It is safe: both
-/// calls take no arguments, return a plain integer, touch no caller memory and
-/// are documented never to fail, so there is no obligation left for a caller to
-/// get wrong and nothing an `unsafe fn` would be asking them to promise.
-///
-/// This function exists only when the crate linked the native library
-/// (`cfg(acadsharp_linked)`), or when rustdoc is building the documentation
-/// (`cfg(doc)`), so it is on docs.rs whether or not the docs.rs builder had an
-/// archive. [`check`] is the comparison and is always here.
-#[cfg(any(acadsharp_linked, doc))]
-pub fn handshake() -> Result<(), HeaderMismatch> {
-    // SAFETY: `viprs_acad_abi_version` takes no arguments, returns a plain
-    // `uint32_t`, touches no memory the caller owns and is documented never to
-    // fail. The only precondition on it is that the symbol is linked, which is
-    // what the `cfg` above says.
-    let actual_version = unsafe { crate::ffi::viprs_acad_abi_version() };
-    // SAFETY: the same, for a `uint64_t`.
-    let actual_fingerprint = unsafe { crate::ffi::viprs_acad_abi_fingerprint() };
-
-    check(actual_version, actual_fingerprint)
 }

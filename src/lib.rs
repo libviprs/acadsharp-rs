@@ -84,10 +84,12 @@
 //! # The layers underneath
 //!
 //! [`batch`] is the zero-copy decoder for the VACB wire protocol, borrowed
-//! views and no allocation, for a caller who already holds bytes. [`ffi`] is
-//! the raw transcription of `viprs_acadsharp.h`. [`abi`] holds the three
-//! constants that pin this crate to one version of that header, and the
-//! handshake that refuses a library built from another one.
+//! views and no allocation, for a caller who already holds bytes. [`abi`]
+//! holds the three constants that pin this crate to one version of the
+//! vendored header, and [`abi::check`], the comparison that refuses a library
+//! built from another one. The raw transcription of `viprs_acadsharp.h` and
+//! every call into the library sit below both of those, and neither is
+//! something a caller reaches for.
 //!
 //! # The header is vendored, and the constants are derived from it
 //!
