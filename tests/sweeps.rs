@@ -56,7 +56,10 @@ fn truncating_a_capture_at_every_offset_never_panics() {
                 clean += 1;
             }
         }
-        println!("{name}: {} truncations parsed without a panic", bytes.len() + 1);
+        println!(
+            "{name}: {} truncations parsed without a panic",
+            bytes.len() + 1
+        );
     }
     // A positive control on the sweep itself. If every cut came back clean the
     // sweep would be testing nothing, and a zero has two explanations.

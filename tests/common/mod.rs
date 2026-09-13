@@ -201,7 +201,13 @@ pub fn document_begin(view_count: u32, drawing_version: u32) -> Vec<u8> {
 }
 
 #[must_use]
-pub fn view_begin(index: u32, kind: u32, extents: [f64; 4], item_count: u64, name: &str) -> Vec<u8> {
+pub fn view_begin(
+    index: u32,
+    kind: u32,
+    extents: [f64; 4],
+    item_count: u64,
+    name: &str,
+) -> Vec<u8> {
     view_begin_raw(index, kind, extents, item_count, name.as_bytes(), 0, 0)
 }
 
@@ -222,7 +228,11 @@ pub fn view_begin_raw(
     p.extend_from_slice(&kind.to_le_bytes());
     push_f64s(&mut p, &extents);
     p.extend_from_slice(&item_count.to_le_bytes());
-    p.extend_from_slice(&u32::try_from(name.len()).expect("name fits a u32").to_le_bytes());
+    p.extend_from_slice(
+        &u32::try_from(name.len())
+            .expect("name fits a u32")
+            .to_le_bytes(),
+    );
     p.extend_from_slice(&reserved0.to_le_bytes());
     push_padded(&mut p, name, pad_fill);
     frame(2, &p)
@@ -534,14 +544,16 @@ pub fn canonical(record_type: u16) -> Vec<u8> {
         9 => polygon(
             h,
             [v(0), v(1), v(2)],
-            &[
-                [v(3), v(4), v(5)],
-                [v(6), v(7), v(8)],
-                [v(9), v(10), v(11)],
-            ],
+            &[[v(3), v(4), v(5)], [v(6), v(7), v(8)], [v(9), v(10), v(11)]],
             &[v(12), v(13), v(14)],
         ),
-        10 => text(h, [v(0), v(1), v(2)], v(3), v(4), "VIPRS-TEXT-PROBE-\u{c4}zzz"),
+        10 => text(
+            h,
+            [v(0), v(1), v(2)],
+            v(3),
+            v(4),
+            "VIPRS-TEXT-PROBE-\u{c4}zzz",
+        ),
         11 => warning(1100, h, "VIPRS-WARNING-PROBE"),
         12 => view_end(0, 15),
         13 => document_end(17, 1),
@@ -657,11 +669,9 @@ pub fn read_capture(bytes: &[u8]) -> Vec<Record<'_>> {
         let batch = BatchReader::new(&bytes[offset..])
             .unwrap_or_else(|e| panic!("the batch at {offset} does not parse: {e}"));
         for (i, record) in batch.records().enumerate() {
-            out.push(
-                record.unwrap_or_else(|e| {
-                    panic!("record {i} of the batch at {offset} does not parse: {e}")
-                }),
-            );
+            out.push(record.unwrap_or_else(|e| {
+                panic!("record {i} of the batch at {offset} does not parse: {e}")
+            }));
         }
         offset += batch.total_len();
     }

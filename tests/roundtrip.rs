@@ -321,7 +321,11 @@ fn batch_flags_above_bit_zero_are_ignored_not_refused() {
     let batch = Builder::new().flags(0xFFFF).record(canonical(3)).build();
     let reader = BatchReader::new(&batch).expect("unknown flag bits are ignored");
     assert!(reader.is_last(), "bit 0 still means what it means");
-    assert_eq!(reader.flags(), 0xFFFF, "the raw flags are surfaced verbatim");
+    assert_eq!(
+        reader.flags(),
+        0xFFFF,
+        "the raw flags are surfaced verbatim"
+    );
     assert_eq!(reader.records().count(), 1);
 }
 

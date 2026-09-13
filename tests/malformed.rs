@@ -224,7 +224,12 @@ fn an_ellipse_of_the_wrong_length_is_refused() {
     for wrong in [116usize, 124] {
         let payload = vec![0u8; wrong - 8];
         let batch = Builder::new()
-            .record(frame_raw(7, 0, u32::try_from(wrong).expect("fits"), &payload))
+            .record(frame_raw(
+                7,
+                0,
+                u32::try_from(wrong).expect("fits"),
+                &payload,
+            ))
             .build();
         assert_corrupt(&batch, 12, Reason::WrongFixedLength);
     }
