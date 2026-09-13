@@ -25,6 +25,15 @@
 //! violation and becomes [`Error::Internal`], never a loop. And the growth is
 //! capped, because a single legal record can approach 2^31 - 1 bytes.
 //!
+//! **Progress.** Every turn of the loop either yields a record or pulls a
+//! batch, and a pull that comes back with nothing in it has moved nothing. A
+//! source that answers `OK` with a well formed twelve byte batch and `done` 0
+//! for ever is not failing, so the latch never sees it, and the loop would
+//! spin on it at about ten million calls a second. So a run of payload-free
+//! non-final batches is counted and [`MAX_EMPTY_BATCHES_IN_A_ROW`] of them in
+//! a row is [`Error::Internal`]. [`crate::batch`] carries a hard iteration
+//! bound one layer down for the same reason.
+//!
 //! **The totals.** [`PrimitiveStream::is_complete`] is the only proof a caller
 //! gets that a decode was not truncated, and it is why the frame records are
 //! items rather than something the stream swallows.
@@ -43,6 +52,19 @@ pub(crate) const DEFAULT_INITIAL_BATCH_BYTES: usize = 64 * 1024;
 
 /// How large a single batch this crate will hold by default.
 pub(crate) const DEFAULT_MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
+
+/// How many payload-free non-final batches in a row this crate will take
+/// before it calls the stream broken.
+///
+/// A batch of twelve bytes is the frame and nothing else, so it moves the
+/// cursor by nothing and the stream is exactly where it was. One of those is a
+/// producer framing a boundary and is legal; a run of them is a library that
+/// will never finish, and the only thing a caller can do about it is stop.
+///
+/// Three rather than one, so a producer with a reason to pad has room, and the
+/// count resets on the first batch that carries a payload, so padding every
+/// other batch runs for ever.
+pub(crate) const MAX_EMPTY_BATCHES_IN_A_ROW: u32 = 3;
 
 /// One call to `viprs_acad_decode_next_batch`, as it came back.
 ///
@@ -226,6 +248,9 @@ struct Core {
     cursor: u64,
     /// The library said this was the last batch.
     native_done: bool,
+    /// Batches in a row that carried no payload and did not say `done`. See
+    /// [`MAX_EMPTY_BATCHES_IN_A_ROW`].
+    empty_batches_in_a_row: u32,
     /// Nothing more will come out of here.
     finished: bool,
     /// Something was refused, so the totals cannot be trusted.
@@ -248,6 +273,7 @@ impl Core {
             batch_len: 0,
             cursor: 0,
             native_done: false,
+            empty_batches_in_a_row: 0,
             finished: false,
             failed: false,
             max_batch_bytes: max_batch_bytes.max(initial),
@@ -349,6 +375,21 @@ impl Core {
                             what: "the library reported a batch size outside the buffer it was \
                                    handed",
                         });
+                    }
+                    // A batch of exactly the header is the frame and no
+                    // records, so this call moved nothing. That is legal once
+                    // and is a stream that never ends if it keeps happening,
+                    // and a payload is what says the decode is really walking.
+                    if written == BATCH_HEADER_LEN && answer.done == 0 {
+                        self.empty_batches_in_a_row += 1;
+                        if self.empty_batches_in_a_row > MAX_EMPTY_BATCHES_IN_A_ROW {
+                            return Err(Error::Internal {
+                                what: "the library answered a run of batches with nothing in \
+                                       them and never reported done",
+                            });
+                        }
+                    } else {
+                        self.empty_batches_in_a_row = 0;
                     }
                     self.batch_len = written;
                     self.cursor = BATCH_HEADER_LEN as u64;
