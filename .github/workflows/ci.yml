@@ -34,11 +34,19 @@ on:
 # same branch, so a newer push supersedes an older run rather than racing it.
 # `main` is excluded: that run is the record of what actually landed.
 #
-# Worth knowing when reading results: a superseded run is CANCELLED, and a
-# cancelled check renders as a failure in `gh pr checks` while being nothing of
-# the sort. Read the `pull_request`-event rows.
+# `github.event_name` is in the key on purpose, and it is the whole point of
+# this block's shape. Without it the `push` run and the `pull_request` run for
+# the same branch share a group, the newer cancels the older, and the cancelled
+# check runs land on the same head sha as the successful ones. Branch
+# protection counts them: GraphQL reports `isRequired: true` on the cancelled
+# row, the rollup goes FAILURE and the PR sits BLOCKED with every job green.
+#
+# An earlier version of this comment claimed a cancelled check "renders as a
+# failure in `gh pr checks` while being nothing of the sort". That was wrong,
+# and three PRs in libviprs were blocked by it while their bodies blamed a job
+# rename. Keyed by event, the two runs coexist and neither kills the other.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: ${{ (github.head_ref || github.ref_name) != 'main' }}
 
 env:
