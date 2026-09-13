@@ -190,6 +190,21 @@ jobs:
       # examples in the public API documentation are compiled by nothing.
       - run: cargo test --doc
 
+      # The static link, which the default shared one never exercises. It has
+      # exactly one silent failure: omitting `+whole-archive` on the init
+      # archive links clean, resolves every symbol, and aborts on the first
+      # call, so a cell that only built would prove nothing.
+      # `tests/static_link.rs` calls the library and then reads `readelf -d` on
+      # its own binary, because a static link that quietly fell back to the
+      # shared library gives the same right answer.
+      #
+      # Measured before this was added, on a native x86_64 machine with the
+      # same pinned x64 archive and stable rustc: the link goes through
+      # rust-lld 22.1.8, which is the linker LINKINFO.md warns can collect the
+      # runtime's `__modules` section, and it works because the shipped archive
+      # carries SHF_GNU_RETAIN. So this cell is not a guess about the runner.
+      - run: cargo test --features link-static --all-targets
+
   suite:
     # The crate side of the cross-repo pin, and the direction `libviprs` does
     # not have: a crate PR runs the sibling suite against its own tree before it
