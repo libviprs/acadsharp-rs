@@ -68,16 +68,31 @@ one thing: that one-line PR is owed.**
 A change that touches only one repo needs none of this. Both pins stay on `main`
 commits.
 
-### Where this stands today
+### What the job checks before it trusts a run
 
-`Suite (acadsharp-rs-tests)` is red, and the pin is not why. The job refuses any
-suite commit whose `Cargo.toml` does not carry
-`acadsharp-rs = { path = "../acadsharp-rs" }`, because without it the suite
-builds against something other than this checkout and a green run would say
-nothing at all about the change that produced it. That dependency is
-`acadsharp-rs-tests#1`, it has not landed, so every suite commit that exists
-today is refused. The job is left failing rather than skipped on purpose: a
-skipped check is the same colour as a passing one.
+A green `Suite (acadsharp-rs-tests)` is only worth something if the suite it ran
+was really built against this tree, so the job proves that first and refuses
+rather than skips:
+
+- The pin parses as one 40-character lowercase sha, and the checkout that comes
+  back is at exactly that sha.
+- `cargo metadata` resolves a package called `acadsharp-rs` from this checkout's
+  own `Cargo.toml`, with no source (so it is the path dependency, not a registry
+  copy), and the suite depends on it as a normal dependency rather than a dev or
+  optional one. Grepping the manifest for the dependency would prove only that
+  somebody wrote it down: a `[patch]`, a workspace member, `optional = true` or
+  an entry under `[dev-dependencies]` all satisfy a text match and change what
+  actually gets built.
+- `SUITE_REV` obeys the merged-only rule for the ref the run is on.
+- The pinned native archive is unpacked and `ACADSHARP_NATIVE_DIR` is exported
+  before the suite builds, through `.github/actions/fetch-native-archive`.
+  Everything that reaches the native library is `cfg(acadsharp_linked)`, so a
+  suite run without the archive compiles every native test out and goes green
+  having run none of them.
+
+There is no `if:` and no `continue-on-error` anywhere in the job, and
+`tests/suite_pin_check.rs` fails if either one appears: a skipped check is the
+same colour as a passing one.
 
 ## Licence
 
