@@ -7,17 +7,34 @@ Callers get Rust types. Neither .NET nor ACadSharp internals reach them.
 
 ## Status
 
-Scaffolding. The crate compiles and the CI gate runs, and that is all so far.
-The native ABI it will link is being specified in `libviprs-dep`, and this crate
-is the Rust side of that ABI's conformance testing.
+Early. What exists is the raw `ffi` module, a byte-for-byte copy of the frozen
+`viprs_acadsharp.h` under `native/`, and `abi`, which holds the constants
+generated from that header and the handshake that refuses a library built
+against a different one. The safe API on top of it is still being built.
+
+`abi::check` compares the two numbers and is always there. `abi::handshake` is
+the wrapper that asks the library for them, so it exists only in a build that
+linked one (and in the documentation, which is how it stays visible on
+docs.rs).
+
+The ABI version, the wire version and the fingerprint are generated from the
+vendored header's bytes at build time, so none of the three is typed anywhere in
+Rust source. `native/NATIVE_HEADER_REV` names the `libviprs-dep` commit the
+header came from and `native/viprs_acadsharp.h.sha256` pins its contents; the
+build refuses to run if the header and that digest disagree.
 
 ## Requirements
 
 - **Rust 1.97+** (edition 2024)
 
-Nothing else. The native library arrives as a published release artifact rather
-than as a sibling checkout, so there is no counterpart repo to lay down beside
-this one and no .NET SDK needed to build or use this crate.
+Nothing else to build it. The native library arrives as a published release
+artifact rather than as a sibling checkout, so there is no counterpart repo to
+lay down beside this one and no .NET SDK needed.
+
+To link it and run the tests that call it, unpack a `libviprs-dep` archive and
+point `ACADSHARP_NATIVE_DIR` at the directory holding `lib/` and
+`metadata/LINKINFO.json`. Without that the crate still builds, checks and
+documents, and everything that reaches the library is compiled out.
 
 ## Boundary
 

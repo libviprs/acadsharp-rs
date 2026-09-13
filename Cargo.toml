@@ -10,6 +10,14 @@ repository = "https://github.com/libviprs/acadsharp-rs"
 # exact toolchain and fails if this line, the toolchain it installs and the
 # README ever disagree.
 rust-version = "1.97"
+# This package owns the ACadSharp native library, and says so. Three things
+# come with it: cargo refuses a graph where two packages link the same native
+# library, the build script's `cargo::metadata=` lines reach a downstream build
+# script as `DEP_ACADSHARP_NATIVE_*` (which is how `libviprs` is meant to learn
+# where the archive is), and cargo knows to rerun dependents when the archive
+# moves. Adding it after publication changes the shape of the dependency graph,
+# so it goes in now while it is free.
+links = "acadsharp_native"
 
 [lints.rust]
 deprecated = "deny"

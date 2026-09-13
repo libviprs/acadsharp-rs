@@ -1,0 +1,9 @@
+# The libviprs-dep commit that `viprs_acadsharp.h` beside this file was taken
+# from, byte for byte. One 40-hex line, same shape as COUNTERPART_REV in the
+# repos that carry one, so a script can read it with `grep -v '^#'`.
+#
+# The header is vendored rather than fetched, so this line is provenance and
+# not a build input: nothing downloads anything at build time. Moving the pin
+# means copying the header again, recomputing `viprs_acadsharp.h.sha256`, and
+# letting the layout and code tests say what changed.
+543cdafe7dca0cc7b22d76706b9b7f4017f1e85b
