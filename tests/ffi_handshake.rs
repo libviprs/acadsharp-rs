@@ -14,8 +14,9 @@
 
 use std::ptr;
 
-use acadsharp_rs::ffi;
-use acadsharp_rs::{EXPECTED_ABI_FINGERPRINT, EXPECTED_ABI_VERSION, EXPECTED_WIRE_VERSION};
+use acadsharp_rs::{
+    EXPECTED_ABI_FINGERPRINT, EXPECTED_ABI_VERSION, EXPECTED_WIRE_VERSION, abi, ffi,
+};
 
 #[test]
 fn the_library_reports_the_abi_version_the_vendored_header_declares() {
@@ -42,19 +43,24 @@ fn the_library_reports_the_fingerprint_of_the_vendored_header() {
 
 #[test]
 fn the_handshake_succeeds_against_the_pinned_archive() {
-    // SAFETY: `handshake` only makes the two calls above, both of which are
-    // argument-free and infallible, so linking is its whole precondition.
-    let result = unsafe { ffi::handshake() };
-    assert_eq!(result, Ok(()), "the handshake refused the pinned archive");
+    // No `unsafe` block, because `handshake` is safe: it makes the two
+    // argument-free infallible calls above and hands the answers to
+    // `abi::check`, so there is no obligation left for me to promise anything
+    // about. The comparison itself is tested in every job, archive or no
+    // archive, by `tests/abi_check.rs`. This is the half that needs a library.
+    assert_eq!(
+        abi::handshake(),
+        Ok(()),
+        "the handshake refused the pinned archive"
+    );
 }
 
 #[test]
 fn capabilities_answer_what_the_contract_says_they_answer() {
-    let mut caps = ffi::viprs_acad_capabilities_v1 {
-        struct_size: u32::try_from(size_of::<ffi::viprs_acad_capabilities_v1>()).unwrap(),
-        struct_version: 1,
-        ..Default::default()
-    };
+    // `default()` and nothing else. It used to be a struct literal that set
+    // `struct_size` and `struct_version` by hand over `..Default::default()`,
+    // which is what a wrong default looks like from the call site.
+    let mut caps = ffi::viprs_acad_capabilities_v1::default();
     let mut required: u64 = 0;
 
     // SAFETY: `caps` is a live, fully initialised struct of the type the callee
