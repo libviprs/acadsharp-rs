@@ -340,8 +340,11 @@ impl ViewKind {
 
 /// A bounding box in drawing units.
 ///
-/// Only ever handed out when it is usable: see [`View::extents`].
+/// Only ever handed out when it is usable: see [`View::extents`] and
+/// [`Extents::new`], both of which are [`batch::Bounds::from_extents`] and
+/// therefore refuse a non-finite or wrong-way-round box.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct Extents {
     /// The smaller x.
     pub min_x: f64,
@@ -353,6 +356,25 @@ pub struct Extents {
     pub max_y: f64,
 }
 
+impl Extents {
+    /// Reads four extent values as a box, or [`None`] when they are not one.
+    ///
+    /// The same rule [`View::extents`] applies, reachable without a document,
+    /// so a caller with four numbers from somewhere else gets the same answer
+    /// and a test double can be built with no archive behind it.
+    ///
+    /// ```
+    /// use acadsharp_rs::Extents;
+    ///
+    /// assert!(Extents::new([-1.0, -2.0, 3.0, 4.0]).is_some());
+    /// assert_eq!(Extents::new([0.0, 0.0, f64::NAN, 10.0]), None);
+    /// ```
+    #[must_use]
+    pub fn new(extents: [f64; 4]) -> Option<Self> {
+        batch::Bounds::from_extents(extents).map(Self::from)
+    }
+}
+
 impl From<batch::Bounds> for Extents {
     fn from(bounds: batch::Bounds) -> Self {
         Self {
@@ -360,6 +382,22 @@ impl From<batch::Bounds> for Extents {
             min_y: bounds.min_y,
             max_x: bounds.max_x,
             max_y: bounds.max_y,
+        }
+    }
+}
+
+/// The way back down, for a caller holding an [`Extents`] that wants the
+/// wire-level name for the same rectangle.
+///
+/// Free and infallible in this direction: every [`Extents`] came through the
+/// rule already, so there is nothing left to check.
+impl From<Extents> for batch::Bounds {
+    fn from(extents: Extents) -> Self {
+        Self {
+            min_x: extents.min_x,
+            min_y: extents.min_y,
+            max_x: extents.max_x,
+            max_y: extents.max_y,
         }
     }
 }
@@ -379,6 +417,42 @@ pub struct View {
 }
 
 impl View {
+    /// Builds a view out of the fields the boundary carries.
+    ///
+    /// This is here for a consumer's own tests. [`crate::Item::ViewBegin`] is
+    /// the one item variant that carries a type this crate builds, so without
+    /// a constructor a downstream test that wants to feed a fake stream
+    /// through its own code needs an archive and a real document to get one,
+    /// which is a lot to ask of a unit test.
+    ///
+    /// `kind` is the boundary's own number rather than a [`ViewKind`], because
+    /// that is what the struct stores: a value a later build gives a meaning
+    /// to has to stay representable. [`View::kind`] is the reading of it.
+    ///
+    /// ```
+    /// use acadsharp_rs::{View, ViewKind};
+    ///
+    /// let view = View::new(0, 0, [-1.0, -2.0, 3.0, 4.0], 7, "Model");
+    /// assert_eq!(view.kind(), ViewKind::Model);
+    /// assert_eq!(view.extents().expect("a real box").max_y, 4.0);
+    /// ```
+    #[must_use]
+    pub fn new(
+        index: u32,
+        kind: u32,
+        extents: [f64; 4],
+        entity_count: u64,
+        name: impl Into<String>,
+    ) -> Self {
+        Self {
+            index,
+            kind,
+            extents,
+            entity_count,
+            name: name.into(),
+        }
+    }
+
     pub(crate) fn from_raw(raw: sys::RawView) -> Self {
         Self {
             index: raw.index,
@@ -438,21 +512,13 @@ impl View {
     /// [`crate::WarningCode::EMPTY_VIEW`] alone is a view with nothing in it;
     /// the same warning with others around it is a view something went wrong
     /// reading. [`View::raw_extents`] is the four numbers either way.
+    ///
+    /// The rule itself is [`batch::Bounds::from_extents`], which
+    /// [`batch::ViewBegin::bounds`] also calls, so the wire layer and this one
+    /// cannot drift apart by an edit to one of them.
     #[must_use]
     pub fn extents(&self) -> Option<Extents> {
-        let [min_x, min_y, max_x, max_y] = self.extents;
-        if !self.extents.iter().all(|v| v.is_finite()) {
-            return None;
-        }
-        if min_x > max_x || min_y > max_y {
-            return None;
-        }
-        Some(Extents {
-            min_x,
-            min_y,
-            max_x,
-            max_y,
-        })
+        batch::Bounds::from_extents(self.extents).map(Extents::from)
     }
 
     /// The four numbers the boundary gave, in the order it declares them, with
