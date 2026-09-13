@@ -189,7 +189,15 @@ jobs:
           rm -rf native-archive/unpacked
           mkdir -p native-archive/unpacked
           tar -xzf "native-archive/$ACADSHARP_ARCHIVE" -C native-archive/unpacked
-          top=$(tar -tzf "native-archive/$ACADSHARP_ARCHIVE" | head -1 | cut -d/ -f1)
+          # Every top-level entry, deduplicated, rather than the first line of
+          # the listing. `tar | head -1` looks obvious and is wrong here: head
+          # closes the pipe, tar dies on the write, and `pipefail` turns that
+          # into a failed step with nothing but "tar: stdout: write error" to
+          # go on. Reading the whole listing also gets me a check worth having,
+          # that the archive unpacks into exactly one directory.
+          top=$(tar -tzf "native-archive/$ACADSHARP_ARCHIVE" | cut -d/ -f1 | sort -u)
+          test "$(printf '%s\n' "$top" | wc -l)" -eq 1 || {
+            echo "::error::the archive has more than one top-level entry: $top"; exit 1; }
           root="$PWD/native-archive/unpacked/$top"
           # The build script wants exactly these two, and reports a warning
           # rather than an error when it cannot find them, so the job checks
