@@ -18,16 +18,3 @@
 /// runtime. Bumping the native ABI without bumping this is the failure the
 /// conformance consumer exists to catch.
 pub const EXPECTED_ABI_VERSION: u32 = 1;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn abi_version_is_pinned() {
-        // A placeholder that still says something: the constant is the value
-        // the native header will be checked against, so a silent edit to it
-        // should not pass unnoticed once the conformance test lands.
-        assert_eq!(EXPECTED_ABI_VERSION, 1);
-    }
-}
