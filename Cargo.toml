@@ -25,7 +25,37 @@ deprecated = "deny"
 [lints.clippy]
 incompatible_msrv = "warn"
 
+[features]
+# Which way the native library gets linked. Both off by default, and the
+# default is the shared link.
+#
+# They are deliberately not mutually exclusive at check time. The conflict is
+# raised by the build script only once an archive has actually resolved, so
+# `cargo doc --all-features` with no archive (which is what the `Docs` job and
+# docs.rs both do) stays green rather than failing on a combination that picks
+# between two things neither of which is there.
+#
+# `link-static` needs an archive whose manifest says `static_certified: true`,
+# which is a measurement: true only where the producer linked the static
+# archive into a probe program and ran it on that target.
+link-static = []
+link-shared = []
+
 [dependencies]
+
+# Both of these are build-time only and neither reaches a consumer's binary.
+# `metadata/LINKINFO.json` arrives inside a downloaded tarball and every string
+# in it that the build script repeats to cargo is a string that tarball chose,
+# so it gets a real parser. Hand-rolling one for a twenty-key manifest is two
+# hundred lines that then need fuzzing for no runtime benefit, and the first
+# attempt at it accepted a raw newline inside a string, which turned out to be
+# arbitrary linker flags on the real link line.
+#
+# The crate's runtime dependency count stays zero, which is the number that
+# matters.
+[build-dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 
 # The allocation proof runs without the test harness on purpose. It arms a
 # counting global allocator, and a second test thread allocating inside that

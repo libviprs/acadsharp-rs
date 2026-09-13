@@ -108,7 +108,11 @@ mod linked {
         // leak the document.
         unsafe { ffi::viprs_acad_close(handle) };
 
-        assert_eq!(code, ffi::VIPRS_ACAD_OK, "the view count call returned {code}");
+        assert_eq!(
+            code,
+            ffi::VIPRS_ACAD_OK,
+            "the view count call returned {code}"
+        );
         assert_eq!(
             count, 3,
             "I asked the synthetic document for three views and the library counted {count}"
@@ -119,8 +123,12 @@ mod linked {
     fn the_test_binary_is_actually_statically_linked() {
         // The half the answer above cannot give me. A shared link that happens
         // to work returns the same 3.
+        // Through a binding, because `assert!(cfg!(..))` is a constant
+        // expression and clippy refuses those. What is decided at compile time
+        // is the same either way.
+        let elf_host = cfg!(target_os = "linux");
         assert!(
-            cfg!(target_os = "linux"),
+            elf_host,
             "the static archive is certified on Linux targets and on no other, so a static link \
              on this host is something nobody measured and this assertion has no instrument for it"
         );

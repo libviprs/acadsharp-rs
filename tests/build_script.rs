@@ -52,7 +52,13 @@ fn scratch(name: &str) -> PathBuf {
 /// Lays out an unpacked archive: `metadata/LINKINFO.json`, a `lib/` and an
 /// empty file for every library the manifest names.
 fn unpack(dir: &Path, manifest_text: &str) -> PathBuf {
-    let root = dir.join("acadsharp-archive");
+    unpack_at(&dir.join("acadsharp-archive"), manifest_text)
+}
+
+/// The same, at exactly the directory given, which is what the cache layout
+/// needs: there the archive root is the `<platform>-<cpu>` directory itself.
+fn unpack_at(root: &Path, manifest_text: &str) -> PathBuf {
+    let root = root.to_path_buf();
     std::fs::create_dir_all(root.join("lib")).expect("I own this directory");
     std::fs::create_dir_all(root.join("metadata")).expect("I own this directory");
     std::fs::write(root.join("metadata/LINKINFO.json"), manifest_text).expect("writable");
@@ -99,17 +105,14 @@ fn build_script() -> PathBuf {
         }
     }
     found.sort();
-    found
-        .pop()
-        .map(|(_, path)| path)
-        .unwrap_or_else(|| {
-            panic!(
-                "I could not find a compiled build script under {}. Cargo builds one for this \
+    found.pop().map(|(_, path)| path).unwrap_or_else(|| {
+        panic!(
+            "I could not find a compiled build script under {}. Cargo builds one for this \
                  package before it builds this test, so if there is none here the layout of the \
                  target directory has changed and this test needs to learn the new one.",
-                build_dir.display()
-            )
-        })
+            build_dir.display()
+        )
+    })
 }
 
 /// One run of the build script and everything it said.
@@ -259,7 +262,11 @@ fn the_shipped_linux_manifest_produces_the_shared_recipe() {
     let root = unpack(&dir, &fixture("aarch64-unknown-linux-gnu"));
     let run = Run::new(&dir).archive(&root).go(&dir);
 
-    assert!(run.ok, "the build script refused a real archive: {}", run.everything());
+    assert!(
+        run.ok,
+        "the build script refused a real archive: {}",
+        run.everything()
+    );
     let lib = root.join("lib");
     assert_eq!(
         run.link_directives(),
@@ -273,7 +280,11 @@ fn the_shipped_linux_manifest_produces_the_shared_recipe() {
         run.everything()
     );
     assert!(run.has_cfg("acadsharp_linked"), "{}", run.everything());
-    assert!(!run.has_cfg("acadsharp_static_linked"), "{}", run.everything());
+    assert!(
+        !run.has_cfg("acadsharp_static_linked"),
+        "{}",
+        run.everything()
+    );
 }
 
 #[test]
@@ -282,7 +293,11 @@ fn the_shipped_linux_manifest_produces_the_static_recipe_when_asked() {
     let root = unpack(&dir, &fixture("aarch64-unknown-linux-gnu"));
     let run = Run::new(&dir).archive(&root).link_static().go(&dir);
 
-    assert!(run.ok, "the build script refused a real archive: {}", run.everything());
+    assert!(
+        run.ok,
+        "the build script refused a real archive: {}",
+        run.everything()
+    );
     let lib = root.join("lib");
     assert_eq!(
         run.link_directives(),
@@ -302,7 +317,11 @@ fn the_shipped_linux_manifest_produces_the_static_recipe_when_asked() {
          runs correctly on the build machine. {}",
         run.everything()
     );
-    assert!(run.has_cfg("acadsharp_static_linked"), "{}", run.everything());
+    assert!(
+        run.has_cfg("acadsharp_static_linked"),
+        "{}",
+        run.everything()
+    );
 }
 
 #[test]
@@ -318,7 +337,11 @@ fn the_shipped_mac_manifest_parses_and_links_the_dylib_it_ships() {
         .archive(&root)
         .go(&dir);
 
-    assert!(run.ok, "the build script refused a real archive: {}", run.everything());
+    assert!(
+        run.ok,
+        "the build script refused a real archive: {}",
+        run.everything()
+    );
     let lib = root.join("lib");
     assert_eq!(
         run.link_directives(),
@@ -347,7 +370,11 @@ fn link_static_against_the_uncertified_mac_archive_stops_the_build() {
         .link_static()
         .go(&dir);
 
-    assert!(!run.ok, "this is supposed to stop the build: {}", run.everything());
+    assert!(
+        !run.ok,
+        "this is supposed to stop the build: {}",
+        run.everything()
+    );
     assert!(
         run.stderr.contains("aarch64-apple-darwin"),
         "the refusal has to name the target that ships no certified static half: {}",
@@ -369,7 +396,11 @@ fn both_features_with_an_archive_present_stops_the_build() {
         .link_shared()
         .go(&dir);
 
-    assert!(!run.ok, "this is supposed to stop the build: {}", run.everything());
+    assert!(
+        !run.ok,
+        "this is supposed to stop the build: {}",
+        run.everything()
+    );
     assert!(
         run.stderr.contains("link-static") && run.stderr.contains("link-shared"),
         "the refusal has to name both features: {}",
@@ -408,7 +439,7 @@ fn the_cache_location_is_resolved_when_the_variable_is_unset() {
         .join("3.7.1-viprs.1")
         .join("linux-arm64");
     std::fs::create_dir_all(&cached).expect("I own this directory");
-    let root = unpack(&cached, &fixture("aarch64-unknown-linux-gnu"));
+    let root = unpack_at(&cached, &fixture("aarch64-unknown-linux-gnu"));
 
     // No ACADSHARP_NATIVE_DIR at all, which is the case the cache exists for.
     let run = Run::new(&dir).go(&dir);
@@ -464,7 +495,11 @@ fn a_job_that_says_it_requires_the_native_lane_fails_rather_than_warns() {
     let dir = scratch("required-no-archive");
     let run = Run::new(&dir).require_native().go(&dir);
 
-    assert!(!run.ok, "this is supposed to stop the build: {}", run.everything());
+    assert!(
+        !run.ok,
+        "this is supposed to stop the build: {}",
+        run.everything()
+    );
     assert!(
         run.stderr.contains("ACADSHARP_NATIVE_DIR") && run.stderr.contains("acadsharp-native"),
         "the failure has to name both places it looked: {}",
@@ -518,7 +553,11 @@ fn a_fingerprint_from_another_header_stops_the_build_with_both_values() {
     let root = unpack(&dir, &text);
     let run = Run::new(&dir).archive(&root).go(&dir);
 
-    assert!(!run.ok, "this is supposed to stop the build: {}", run.everything());
+    assert!(
+        !run.ok,
+        "this is supposed to stop the build: {}",
+        run.everything()
+    );
     assert!(
         run.stderr.contains("aabbccddeeff0011") && run.stderr.contains("0502ac0f61611530"),
         "both fingerprints have to be in the message or nobody can tell which side moved: {}",
@@ -537,7 +576,11 @@ fn a_schema_version_from_the_future_stops_the_build() {
     let root = unpack(&dir, &text);
     let run = Run::new(&dir).archive(&root).go(&dir);
 
-    assert!(!run.ok, "this is supposed to stop the build: {}", run.everything());
+    assert!(
+        !run.ok,
+        "this is supposed to stop the build: {}",
+        run.everything()
+    );
     assert!(
         run.stderr.contains("schema_version"),
         "{}",
@@ -548,20 +591,16 @@ fn a_schema_version_from_the_future_stops_the_build() {
 #[test]
 fn a_missing_required_field_stops_the_build_and_names_it() {
     let dir = scratch("missing-field");
-    let text = mutated(
-        "aarch64-unknown-linux-gnu",
-        "  \"wire_version\": 2,\n",
-        "",
-    );
+    let text = mutated("aarch64-unknown-linux-gnu", "  \"wire_version\": 2,\n", "");
     let root = unpack(&dir, &text);
     let run = Run::new(&dir).archive(&root).go(&dir);
 
-    assert!(!run.ok, "this is supposed to stop the build: {}", run.everything());
     assert!(
-        run.stderr.contains("wire_version"),
-        "{}",
+        !run.ok,
+        "this is supposed to stop the build: {}",
         run.everything()
     );
+    assert!(run.stderr.contains("wire_version"), "{}", run.everything());
 }
 
 #[test]
@@ -575,8 +614,16 @@ fn an_empty_static_library_path_stops_the_build() {
     let root = unpack(&dir, &text);
     let run = Run::new(&dir).archive(&root).go(&dir);
 
-    assert!(!run.ok, "this is supposed to stop the build: {}", run.everything());
-    assert!(run.stderr.contains("static_library"), "{}", run.everything());
+    assert!(
+        !run.ok,
+        "this is supposed to stop the build: {}",
+        run.everything()
+    );
+    assert!(
+        run.stderr.contains("static_library"),
+        "{}",
+        run.everything()
+    );
 }
 
 #[test]
@@ -589,7 +636,11 @@ fn a_manifest_that_is_not_json_at_all_stops_the_build() {
     let root = unpack(&dir, text);
     let run = Run::new(&dir).archive(&root).go(&dir);
 
-    assert!(!run.ok, "this is supposed to stop the build: {}", run.everything());
+    assert!(
+        !run.ok,
+        "this is supposed to stop the build: {}",
+        run.everything()
+    );
     assert!(
         !run.stdout.contains("totally-bogus"),
         "nothing out of the manifest may reach stdout before it has been refused: {}",
@@ -606,7 +657,11 @@ fn an_archive_for_another_triple_stops_the_build() {
         .archive(&root)
         .go(&dir);
 
-    assert!(!run.ok, "this is supposed to stop the build: {}", run.everything());
+    assert!(
+        !run.ok,
+        "this is supposed to stop the build: {}",
+        run.everything()
+    );
     assert!(
         run.stderr.contains("aarch64-unknown-linux-musl")
             && run.stderr.contains("aarch64-unknown-linux-gnu"),
@@ -627,7 +682,11 @@ fn a_manifest_naming_a_library_that_is_not_in_the_archive_stops_the_build() {
     let root = unpack(&dir, &text);
     let run = Run::new(&dir).archive(&root).go(&dir);
 
-    assert!(!run.ok, "this is supposed to stop the build: {}", run.everything());
+    assert!(
+        !run.ok,
+        "this is supposed to stop the build: {}",
+        run.everything()
+    );
     assert!(run.stderr.contains("libnowhere.so"), "{}", run.everything());
 }
 
@@ -647,7 +706,14 @@ fn nothing_in_the_build_half_of_this_crate_can_fetch_anything() {
     }
     for path in files {
         let text = std::fs::read_to_string(&path).expect("a readable file");
-        for forbidden in ["https://", "http://", "TcpStream", "reqwest", "ureq", "curl"] {
+        for forbidden in [
+            "https://",
+            "http://",
+            "TcpStream",
+            "reqwest",
+            "ureq",
+            "curl",
+        ] {
             assert!(
                 !text.contains(forbidden),
                 "{} mentions {forbidden}, and the build half of this crate never reaches the \

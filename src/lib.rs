@@ -29,10 +29,18 @@
 //!
 //! Point `ACADSHARP_NATIVE_DIR` at an unpacked `libviprs-dep` archive, the
 //! directory holding `lib/` and `metadata/LINKINFO.json`, and the build script
-//! emits the link lines and sets `cfg(acadsharp_linked)`. With no archive the
-//! crate still builds, checks and documents; everything that calls the library
-//! is simply compiled out, which is what [`abi::handshake`] being the one
-//! gated function in here is about. [`batch`] never links: it reads bytes.
+//! emits the link lines and sets `cfg(acadsharp_linked)`. Failing that it looks
+//! in `$CARGO_HOME/acadsharp-native/<artifact_version>/<platform>-<cpu>/`, and
+//! it never downloads anything. With no archive the crate still builds, checks
+//! and documents; everything that calls the library is simply compiled out,
+//! which is what [`abi::handshake`] being the one gated function in here is
+//! about. [`batch`] never links: it reads bytes.
+//!
+//! The `link-shared` and `link-static` features pick which way. Both are off by
+//! default and the default is the shared link. `link-static` needs an archive
+//! whose manifest says `static_certified: true`, which is true only where the
+//! producer linked the static archive into a probe program and ran it on that
+//! target, and asking for it anywhere else is a refusal naming the target.
 //!
 //! [`libviprs-dep`]: https://github.com/libviprs/libviprs-dep
 #![forbid(unsafe_op_in_unsafe_fn)]

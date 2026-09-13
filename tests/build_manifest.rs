@@ -101,6 +101,10 @@ fn validate(raw: Raw) -> Result<manifest::LinkInfo, LinkInfoError> {
     raw.validate(&manifest_path())
 }
 
+/// One row of the tables below: the field this case is about, and the edit
+/// that makes its rule fire.
+type Case = (&'static str, Box<dyn Fn(&mut Raw)>);
+
 fn refused(raw: Raw, what: &str) -> LinkInfoError {
     match validate(raw) {
         Ok(info) => panic!("I expected {what} to be refused, and it parsed as {info:?}"),
@@ -208,7 +212,7 @@ fn every_required_field_that_goes_missing_is_its_own_refusal() {
     // that each one is named in its own message. A loop over field names would
     // need the reader to expose a by-name setter, and then the test would be
     // checking the setter.
-    let cases: Vec<(&str, Box<dyn Fn(&mut Raw)>)> = vec![
+    let cases: Vec<Case> = vec![
         (
             "schema_version",
             Box::new(|r: &mut Raw| r.schema_version = None),
@@ -230,7 +234,10 @@ fn every_required_field_that_goes_missing_is_its_own_refusal() {
         ("platform", Box::new(|r: &mut Raw| r.platform = None)),
         ("cpu", Box::new(|r: &mut Raw| r.cpu = None)),
         ("abi_version", Box::new(|r: &mut Raw| r.abi_version = None)),
-        ("wire_version", Box::new(|r: &mut Raw| r.wire_version = None)),
+        (
+            "wire_version",
+            Box::new(|r: &mut Raw| r.wire_version = None),
+        ),
         (
             "dwg_version_min",
             Box::new(|r: &mut Raw| r.dwg_version_min = None),
@@ -327,7 +334,7 @@ fn an_older_schema_version_is_read_as_long_as_every_field_is_there() {
 
 #[test]
 fn certified_with_any_static_field_missing_is_refused_by_name() {
-    let cases: Vec<(&str, Box<dyn Fn(&mut Raw)>)> = vec![
+    let cases: Vec<Case> = vec![
         (
             "static_library",
             Box::new(|r: &mut Raw| r.static_library = None),
@@ -367,7 +374,7 @@ fn a_static_field_beside_static_certified_false_is_refused_by_name() {
     // The shape a build script author reads as belonging to the shared link.
     // There is no third state, so a field describing a static link that was
     // never certified is a manifest defect rather than a hint.
-    let cases: Vec<(&str, Box<dyn Fn(&mut Raw)>)> = vec![
+    let cases: Vec<Case> = vec![
         (
             "static_library",
             Box::new(|r: &mut Raw| r.static_library = Some("lib/libacadsharp_native.a".into())),
@@ -391,7 +398,10 @@ fn a_static_field_beside_static_certified_false_is_refused_by_name() {
     for (field, add_it) in cases {
         let mut raw = uncertified();
         add_it(&mut raw);
-        let error = refused(raw, &format!("`static_certified: false` carrying `{field}`"));
+        let error = refused(
+            raw,
+            &format!("`static_certified: false` carrying `{field}`"),
+        );
         assert_eq!(
             error,
             LinkInfoError::StaticFieldUnexpected {
@@ -454,9 +464,15 @@ fn the_fingerprint_is_kept_as_a_number() {
 #[test]
 fn every_way_of_writing_the_fingerprint_wrong_is_refused() {
     let cases = [
-        ("0x0502ac0f61611530", "a 0x prefix, which most base-16 parsers reject rather than skip"),
+        (
+            "0x0502ac0f61611530",
+            "a 0x prefix, which most base-16 parsers reject rather than skip",
+        ),
         ("0502AC0F61611530", "uppercase"),
-        ("502ac0f61611530", "fifteen characters, so a leading zero went missing"),
+        (
+            "502ac0f61611530",
+            "fifteen characters, so a leading zero went missing",
+        ),
         ("0502ac0f616115300", "seventeen characters"),
         ("", "nothing at all"),
         ("0502ac0f6161153g", "a character that is not a hex digit"),
@@ -499,8 +515,11 @@ fn a_fingerprint_that_is_not_the_head_of_the_digest_beside_it_is_refused() {
 
 #[test]
 fn a_header_digest_that_is_not_64_lowercase_hex_is_refused() {
-    for value in ["0502AC0F", "", "0502ac0f616115300fc52c84d99054e366a7ea520363f166d463b44c506233f"]
-    {
+    for value in [
+        "0502AC0F",
+        "",
+        "0502ac0f616115300fc52c84d99054e366a7ea520363f166d463b44c506233f",
+    ] {
         let raw = Raw {
             abi_header_sha256: Some(value.to_string()),
             ..certified()
@@ -580,7 +599,13 @@ fn the_names_the_real_archive_ships_are_all_accepted() {
     let info = validate(uncertified()).expect("the shipped mac names are names");
     assert_eq!(
         info.shared_system_libraries,
-        vec!["icucore.A", "objc.A", "swiftCore", "swiftFoundation", "System.B"]
+        vec![
+            "icucore.A",
+            "objc.A",
+            "swiftCore",
+            "swiftFoundation",
+            "System.B"
+        ]
     );
 
     // And the ones a static link on a glibc host would plausibly list.

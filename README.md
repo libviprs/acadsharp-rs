@@ -37,6 +37,34 @@ archive and point `ACADSHARP_NATIVE_DIR` at the directory holding `lib/` and
 `metadata/LINKINFO.json`. Without that the crate still builds, checks and
 documents, and everything that reaches the library is compiled out.
 
+### Where an archive is looked for
+
+Two places, in order, and nowhere else. The build script never downloads
+anything.
+
+1. `ACADSHARP_NATIVE_DIR`, pointing at an unpacked archive root.
+2. `$CARGO_HOME/acadsharp-native/<artifact_version>/<platform>-<cpu>/`, for
+   example `~/.cargo/acadsharp-native/3.7.1-viprs.1/linux-arm64/`. Unpack an
+   archive there and the variable becomes unnecessary. With two versions cached
+   for one target the build script refuses to guess and asks for the variable.
+
+Fetching an archive automatically is a later feature and deliberately not this
+one: a build script that downloads is a build script that behaves differently
+on a machine with no network, and the pin, the digest check and the unpack
+already live in `.github/actions/fetch-native-archive`.
+
+### Shared or static
+
+`link-shared` and `link-static` are Cargo features, both off by default, and
+the default is the shared link.
+
+`link-static` needs an archive whose `metadata/LINKINFO.json` says
+`static_certified: true`, which is a measurement rather than an intention: it
+is true only where the producer linked the static archive into a probe program
+and ran it on that target. Asking for it anywhere else is a refusal naming the
+target. Turning both features on is a refusal too, but only once an archive has
+resolved, so `cargo doc --all-features` without one stays green.
+
 ## Boundary
 
 This crate owns the safe Rust API and the FFI that reaches the native library.
