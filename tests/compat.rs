@@ -560,11 +560,26 @@ fn the_readme_table_is_the_declaration() {
     }
 
     let region = compat::readme_table_region(&readme, &path.display().to_string());
+    // Row by row rather than `assert_eq!` on the two whole tables. A failure
+    // that prints two escaped multi-line blobs and leaves the reader to spot
+    // the difference is a failure nobody reviews, and I have watched exactly
+    // that happen on a gate that compared two JSON documents this way.
+    let found: Vec<&str> = region.trim().lines().map(str::trim_end).collect();
+    let want: Vec<&str> = rendered.trim().lines().map(str::trim_end).collect();
+    for (number, (found, want)) in found.iter().zip(want.iter()).enumerate() {
+        assert_eq!(
+            found,
+            want,
+            "line {} of the generated table in README.md is not what COMPAT.toml says.\n  README.md:   {found}\n  COMPAT.toml: {want}\nRegenerate it with `ACADSHARP_UPDATE_README=1 cargo test --test compat readme` rather than editing it by hand.",
+            number + 1
+        );
+    }
     assert_eq!(
-        region.trim(),
-        rendered.trim(),
-        "the table in README.md and COMPAT.toml disagree. The table is generated, so fix it with \
-         `ACADSHARP_UPDATE_README=1 cargo test --test compat readme` rather than by hand."
+        found.len(),
+        want.len(),
+        "the generated table in README.md has {} lines and COMPAT.toml renders {}. Every line they share matches, so this is a row added or dropped by hand. Regenerate it with `ACADSHARP_UPDATE_README=1 cargo test --test compat readme`.",
+        found.len(),
+        want.len()
     );
 }
 
