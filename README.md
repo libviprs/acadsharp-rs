@@ -23,6 +23,36 @@ Rust source. `native/NATIVE_HEADER_REV` names the `libviprs-dep` commit the
 header came from and `native/viprs_acadsharp.h.sha256` pins its contents; the
 build refuses to run if the header and that digest disagree.
 
+## What this crate is compatible with
+
+`COMPAT.toml` at the root is the declaration, and nothing in it is a fact this
+crate owns. Two of the five keys belong to the vendored header, one is that
+header's digest, and two describe the archives `libviprs-dep` publishes. So the
+build checks every line against the thing it describes and refuses to carry on
+when one of them disagrees, which is what keeps the file from becoming
+decoration.
+
+<!-- BEGIN generated from COMPAT.toml -->
+| What `COMPAT.toml` declares | Value | What checks it |
+| --- | --- | --- |
+| `abi_version` | `2` | `#define VIPRS_ACAD_ABI_VERSION` in `native/viprs_acadsharp.h`, every build |
+| `wire_version` | `2` | `#define VIPRS_ACAD_WIRE_VERSION` in `native/viprs_acadsharp.h`, every build |
+| `abi_header_sha256` | `0502ac0f616115300fc52c84d99054e366a7ea520363f166d463b44c506233fa` | the sha256 of `native/viprs_acadsharp.h`, recomputed every build |
+| `native_artifact_versions` | `3.7.1-viprs.*` | `artifact_version` in the archive's `metadata/LINKINFO.json`, when one resolves |
+| `acadsharp_versions` | `3.7.1` | `acadsharp_version` in the archive's `metadata/LINKINFO.json`, when one resolves |
+<!-- END generated from COMPAT.toml -->
+
+The table is generated. `tests/compat.rs` fails when it and `COMPAT.toml`
+disagree, and `ACADSHARP_UPDATE_README=1 cargo test --test compat readme`
+rewrites it.
+
+The two version numbers are declared there and derived in `build.rs` from the
+header's own bytes, and the build stops when the two disagree. That is the
+other way round from reading the numbers out of the TOML, on purpose: a header
+bump that forgot `COMPAT.toml` would otherwise compile clean against a number
+nobody had checked. `docs/UPGRADING.md` walks an ACadSharp bump through every
+file that has to move.
+
 ## Requirements
 
 - **Rust 1.97+** (edition 2024)

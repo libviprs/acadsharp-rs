@@ -1,4 +1,4 @@
-//! Two jobs, and they are deliberately small.
+//! Three jobs, and they are deliberately small.
 //!
 //! The first is to turn the bytes of `native/viprs_acadsharp.h` into the three
 //! constants the crate compares the library against: the ABI version, the wire
@@ -7,7 +7,13 @@
 //! the file it describes the first time that file changes, and it drifts in
 //! the one direction that does damage, by carrying on reporting agreement.
 //!
-//! The second is to find the native archive, if there is one, and emit the
+//! The second is `COMPAT.toml`, the compatibility declaration, which is read
+//! and then checked against everything it declares: the two versions and the
+//! digest against the header, and the two artifact fields against the
+//! archive's manifest. A value in there that disagrees stops the build. Why
+//! the declaration is checked rather than believed is in `build/compat.rs`.
+//!
+//! The third is to find the native archive, if there is one, and emit the
 //! link lines for it. That half is deliberately the thin version: shared
 //! linking only, one hand-rolled reader for one field of `LINKINFO.json`, no
 //! `serde`, no features, no static recipe. Issue #3 replaces exactly this half
@@ -20,6 +26,14 @@
 //! `MSRV` and `Docs` never link one. So a missing archive is a warning and an
 //! absent `cfg`, never an error.
 
+// ---------------------------------------------------------------------------
+// Issue #6 (H3.4) owns `build/compat.rs` and every region below marked with
+// its number. `#[allow(dead_code)]` because the README rendering half of that
+// module is `tests/compat.rs`' to use and this script never calls it.
+// ---------------------------------------------------------------------------
+#[allow(dead_code)]
+#[path = "build/compat.rs"]
+mod compat;
 #[path = "build/header.rs"]
 mod header;
 #[path = "build/linkinfo.rs"]
@@ -33,6 +47,10 @@ use std::path::{Path, PathBuf};
 const HEADER: &str = "native/viprs_acadsharp.h";
 /// The digest committed beside it, in `sha256sum` format.
 const HEADER_DIGEST: &str = "native/viprs_acadsharp.h.sha256";
+// --- issue #6 (H3.4) -------------------------------------------------------
+/// The compatibility declaration, relative to the manifest directory.
+const COMPAT: &str = compat::COMPAT_FILE;
+// --- end issue #6 ----------------------------------------------------------
 
 fn main() {
     // Emitting any rerun-if-changed turns off cargo's default "rerun when
@@ -44,6 +62,10 @@ fn main() {
     println!("cargo::rerun-if-changed=build/sha256.rs");
     println!("cargo::rerun-if-changed={HEADER}");
     println!("cargo::rerun-if-changed={HEADER_DIGEST}");
+    // --- issue #6 (H3.4) ---------------------------------------------------
+    println!("cargo::rerun-if-changed=build/compat.rs");
+    println!("cargo::rerun-if-changed={COMPAT}");
+    // --- end issue #6 ------------------------------------------------------
     println!("cargo::rerun-if-env-changed=ACADSHARP_NATIVE_DIR");
     // Without this every `cfg(acadsharp_linked)` in the crate is an
     // unexpected_cfgs warning, and the gate denies warnings.
@@ -108,8 +130,58 @@ pub const EXPECTED_ABI_FINGERPRINT: u64 = {fingerprint:#018x};
     std::fs::write(&out, generated)
         .unwrap_or_else(|e| panic!("I could not write {}: {e}", out.display()));
 
+    // --- issue #6 (H3.4) ---------------------------------------------------
+    // The declaration, checked against the header it declares. All three
+    // numbers handed over here came out of the header's bytes a few lines up,
+    // so this is the declaration being checked and never the header.
+    let declared = compat::Compat::read(&manifest_dir.join(COMPAT));
+    declared.check_against_header(
+        abi_version,
+        wire_version,
+        &sha256::hex(&digest),
+        HEADER,
+        COMPAT,
+    );
+    // And against the archive, if this build has one. Before `resolve_archive`
+    // rather than inside it, so an archive the declaration does not cover
+    // stops the build before a single link directive is printed, and so that
+    // issue #3 can replace the whole of the archive half below without this
+    // check going with it.
+    check_archive_against_declaration(&declared);
+    // --- end issue #6 ------------------------------------------------------
+
     resolve_archive();
 }
+
+// --- issue #6 (H3.4) -------------------------------------------------------
+
+/// Refuses an archive `COMPAT.toml` has not declared this crate compatible
+/// with.
+///
+/// It resolves `ACADSHARP_NATIVE_DIR` itself rather than borrowing whatever
+/// the archive half below found, which is one duplicated `env::var_os` and
+/// buys a clean seam: issue #3 rewrites `resolve_archive` wholesale and this
+/// function is not in it. A missing variable or a missing manifest is silence
+/// here, because the archive half already warns about both and two warnings
+/// for one absent archive reads like two problems.
+fn check_archive_against_declaration(declared: &compat::Compat) {
+    let Some(dir) = std::env::var_os("ACADSHARP_NATIVE_DIR") else {
+        return;
+    };
+    let manifest = PathBuf::from(&dir).join("metadata").join("LINKINFO.json");
+    if !manifest.is_file() {
+        return;
+    }
+    println!("cargo::rerun-if-changed={}", manifest.display());
+    let text = std::fs::read_to_string(&manifest)
+        .unwrap_or_else(|e| panic!("I could not read {}: {e}", manifest.display()));
+    // Issue #3's manifest parser replaces `from_manifest_text`; `check_archive`
+    // takes the two fields as a struct so that swap is a one-line one.
+    let identity = compat::ArchiveIdentity::from_manifest_text(&text, &manifest);
+    declared.check_archive(&identity, &manifest, COMPAT);
+}
+
+// --- end issue #6 ----------------------------------------------------------
 
 fn env_var(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|e| panic!("cargo did not set {name}: {e}"))

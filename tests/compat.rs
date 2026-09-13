@@ -229,7 +229,10 @@ fn the_declared_digest_is_the_digest_committed_beside_the_header() {
     let path = repo_root().join("native/viprs_acadsharp.h.sha256");
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("I could not read {}: {e}", path.display()));
-    let committed = text.split_whitespace().next().expect("the pin file is empty");
+    let committed = text
+        .split_whitespace()
+        .next()
+        .expect("the pin file is empty");
     assert_eq!(
         declared.abi_header_sha256, committed,
         "COMPAT.toml and native/viprs_acadsharp.h.sha256 describe different headers"
@@ -404,9 +407,13 @@ fn the_declared_glob_accepts_the_archive_that_ships_today() {
     // The declaration's own glob, not a fixture glob, against the artifact
     // version in the real manifest.
     let declared = declaration();
-    let identity = compat::ArchiveIdentity::from_manifest_text(REAL_MANIFEST, &fake_manifest_path());
+    let identity =
+        compat::ArchiveIdentity::from_manifest_text(REAL_MANIFEST, &fake_manifest_path());
     assert!(
-        compat::glob_matches(&declared.native_artifact_versions, &identity.artifact_version),
+        compat::glob_matches(
+            &declared.native_artifact_versions,
+            &identity.artifact_version
+        ),
         "COMPAT.toml's glob {:?} refuses the artifact version {:?} that ships today",
         declared.native_artifact_versions,
         identity.artifact_version
@@ -422,13 +429,15 @@ fn the_real_archive_manifest_is_accepted() {
     // The other positive control. Two tests below refuse a manifest, and a
     // check that refuses every manifest passes both of them.
     let declared = declaration();
-    let identity = compat::ArchiveIdentity::from_manifest_text(REAL_MANIFEST, &fake_manifest_path());
+    let identity =
+        compat::ArchiveIdentity::from_manifest_text(REAL_MANIFEST, &fake_manifest_path());
     declared.check_archive(&identity, &fake_manifest_path(), compat::COMPAT_FILE);
 }
 
 #[test]
 fn the_manifest_reader_reads_the_two_fields_it_is_for() {
-    let identity = compat::ArchiveIdentity::from_manifest_text(REAL_MANIFEST, &fake_manifest_path());
+    let identity =
+        compat::ArchiveIdentity::from_manifest_text(REAL_MANIFEST, &fake_manifest_path());
     assert_eq!(identity.artifact_version, "3.7.1-viprs.1");
     assert_eq!(identity.acadsharp_version, "3.7.1");
 }
@@ -465,6 +474,27 @@ fn an_acadsharp_version_not_in_the_list_stops_the_build_naming_compat_toml() {
     assert!(
         message.contains(compat::COMPAT_FILE) && message.contains("3.7.15"),
         "the refusal has to name COMPAT.toml and the version it got, and it said: {message}"
+    );
+}
+
+/// The archive ships the digest of its own copy of the header, and this crate
+/// vendors a copy of the same header. So a vendored header that is not the one
+/// the archive was built against shows up as two different digests, and this
+/// is the cheapest place that comparison can happen.
+///
+/// It is a test rather than a build refusal on purpose. Comparing the archive's
+/// `abi_header_sha256` against the header the bindings were generated from is
+/// step 4 of LINKINFO.md's consumer checklist, and that checklist is the
+/// archive policy, which is issue #3's half of `build.rs`. I would rather have
+/// the check twice than reach into that half from here, so it lives in the
+/// tests until #3's policy picks it up.
+#[test]
+fn the_declared_digest_is_the_digest_the_archive_says_its_header_has() {
+    let declared = declaration();
+    assert!(
+        REAL_MANIFEST.contains(&declared.abi_header_sha256),
+        "COMPAT.toml declares the header digest {} and the published manifest does not carry it,          so the vendored header is not the one the archive was built against",
+        declared.abi_header_sha256
     );
 }
 
