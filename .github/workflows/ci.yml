@@ -199,6 +199,92 @@ jobs:
       # carries SHF_GNU_RETAIN. So this cell is not a guess about the runner.
       - run: cargo test --features link-static --all-targets
 
+      # The one class of failure nothing else in this repo can see, and the
+      # reason it is invisible is the same reason it happens: the rpath that
+      # finds `libacadsharp_native.so` goes out as `cargo::rustc-link-arg`, and
+      # cargo binds that to the emitting package's own binaries, tests and
+      # examples. Every cell above is one of those targets, so every cell above
+      # passes, and a binary in somebody else's crate dies before `main` with
+      # exit 127. Two reviewers hit it independently on their first run.
+      #
+      # A test inside this crate cannot reproduce that, because a test inside
+      # this crate is covered by the rpath. So this builds a real downstream
+      # crate in the runner's temp directory and runs it three ways: with no
+      # help at all (which is the trap), with the build script the README tells
+      # a consumer to write, and with `link-static`. The first one is the
+      # positive control: if it ever starts working, the instrument has stopped
+      # measuring anything and the README paragraph is stale.
+      - name: A downstream binary sees what a downstream binary sees
+        shell: bash
+        run: |
+          set -uo pipefail
+          down="$RUNNER_TEMP/downstream"
+          mkdir -p "$down/src"
+          cat > "$down/Cargo.toml" <<EOF
+          [package]
+          name = "downstream"
+          version = "0.0.0"
+          edition = "2021"
+
+          [dependencies]
+          acadsharp-rs = { path = "$GITHUB_WORKSPACE" }
+          EOF
+          cat > "$down/src/main.rs" <<'EOF'
+          fn main() {
+              acadsharp_rs::abi::handshake().expect("the archive matches the vendored header");
+              println!("the downstream binary ran");
+          }
+          EOF
+          cd "$down"
+          # Explicit, so the binary is where this script says it is whatever
+          # the environment thinks CARGO_TARGET_DIR should be.
+          export CARGO_TARGET_DIR="$down/target"
+          bin="$CARGO_TARGET_DIR/debug/downstream"
+
+          # No `set -e` anywhere in here on purpose: the first run is supposed
+          # to fail, and a shell that exits on the first non-zero command
+          # cannot tell the difference between the failure it is measuring and
+          # one it is not.
+          run_it() {
+            env -u LD_LIBRARY_PATH "$bin" >"$RUNNER_TEMP/out.txt" 2>&1
+            rc=$?
+            cat "$RUNNER_TEMP/out.txt"
+            return $rc
+          }
+
+          echo "::group::1. no help at all, which is the trap"
+          cargo build --quiet || { echo "::error::a downstream crate does not even build against this one"; exit 1; }
+          if run_it; then
+            echo "::error::a downstream binary linked shared and ran with no rpath, no LD_LIBRARY_PATH and no link-static. That is not what cargo did when this cell was written, so either this crate now propagates the rpath (in which case delete the README paragraph and this cell) or this cell stopped exercising the shared link."
+            exit 1
+          fi
+          echo "it died at load, as documented"
+          grep -q 'libacadsharp_native' "$RUNNER_TEMP/out.txt" || {
+            echo "::error::it failed for some other reason than the loader not finding the library"; exit 1; }
+          echo "::endgroup::"
+
+          echo "::group::2. the build script the README tells a consumer to write"
+          cat > "$down/build.rs" <<'EOF'
+          fn main() {
+              if let Ok(dir) = std::env::var("DEP_ACADSHARP_NATIVE_LIB_DIR") {
+                  println!("cargo::rustc-link-arg=-Wl,-rpath,{dir}");
+              }
+          }
+          EOF
+          cargo build --quiet || { echo "::error::the downstream build script does not compile"; exit 1; }
+          run_it || { echo "::error::the rpath recipe in README.md does not work"; exit 1; }
+          echo "::endgroup::"
+
+          echo "::group::3. link-static, which is the deployable mode"
+          mv "$down/build.rs" "$down/build.rs.off"
+          sed -i 's|path = "'"$GITHUB_WORKSPACE"'" }|path = "'"$GITHUB_WORKSPACE"'", features = ["link-static"] }|' "$down/Cargo.toml"
+          cargo build --quiet || { echo "::error::a downstream crate cannot build with link-static"; exit 1; }
+          run_it || { echo "::error::a downstream binary cannot use link-static"; exit 1; }
+          if readelf -d "$bin" | grep -q libacadsharp_native; then
+            echo "::error::link-static produced a binary that still needs the shared library"; exit 1
+          fi
+          echo "::endgroup::"
+
   suite:
     # The crate side of the cross-repo pin, and the direction `libviprs` does
     # not have: a crate PR runs the sibling suite against its own tree before it
