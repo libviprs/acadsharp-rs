@@ -27,7 +27,9 @@
 //! - **It never hangs.** A record shorter than its own header cannot advance
 //!   the cursor, so it is refused, and a hard iteration bound of
 //!   `payload_length / 8 + 1` turns a mistake in that rule into a failed parse
-//!   rather than a job somebody has to kill.
+//!   rather than a job somebody has to kill. That bound and the one other
+//!   backstop here report [`BatchError::Internal`], because a bug in this
+//!   crate is not the caller's drawing being corrupt.
 //!
 //! # What it will not refuse
 //!
@@ -246,14 +248,6 @@ pub enum Reason {
     NonFiniteFloat,
     /// A `Warning` carrying code zero, which is not a warning code.
     ZeroWarningCode,
-    /// The hard iteration bound was reached, which means a record advanced the
-    /// cursor by less than it should have. Unreachable while
-    /// [`Reason::LengthBelowHeader`] is enforced, and here so that a mistake in
-    /// that rule is a failed parse rather than a hang.
-    IterationBound,
-    /// A field ran off the end of a payload whose length was already checked.
-    /// Unreachable by construction, and typed rather than a panic.
-    Truncated,
 }
 
 impl Reason {
@@ -284,12 +278,6 @@ impl Reason {
             Self::InvalidUtf8 => "a declared string is not UTF-8",
             Self::NonFiniteFloat => "a geometry record carries a NaN or an infinity",
             Self::ZeroWarningCode => "zero is not a warning code",
-            Self::IterationBound => {
-                "the iteration bound was reached, so a record did not advance the cursor"
-            }
-            Self::Truncated => {
-                "a field ran off the end of a payload whose length was already checked"
-            }
         }
     }
 }
@@ -326,6 +314,24 @@ pub enum BatchError {
         /// The version this module parses, [`WIRE_VERSION`].
         expected: u16,
     },
+    /// A bug in this crate, not a problem with the bytes.
+    ///
+    /// Two backstops produce this and neither should ever fire. One is the
+    /// hard iteration bound, which catches a record that advanced the cursor
+    /// by less than it should have; the other is a field running off the end
+    /// of a payload whose length this module already checked. Both are
+    /// unreachable by construction and both are typed rather than a panic,
+    /// because a decoder that panics on a length field is worse than one that
+    /// says it got confused.
+    ///
+    /// They used to be [`BatchError::CorruptInput`], which told a caller their
+    /// drawing was corrupt when the drawing was fine and the decoder was not.
+    /// Getting one of these means the bytes at `offset` are worth attaching to
+    /// a bug report against this crate.
+    Internal {
+        /// Bytes from the start of the batch to the record being read.
+        offset: u64,
+    },
 }
 
 impl BatchError {
@@ -333,12 +339,18 @@ impl BatchError {
     #[must_use]
     pub const fn offset(&self) -> u64 {
         match self {
-            Self::CorruptInput { offset, .. } | Self::AbiMismatch { offset, .. } => *offset,
+            Self::CorruptInput { offset, .. }
+            | Self::AbiMismatch { offset, .. }
+            | Self::Internal { offset } => *offset,
         }
     }
 
     const fn corrupt(offset: u64, reason: Reason) -> Self {
         Self::CorruptInput { offset, reason }
+    }
+
+    const fn internal(offset: u64) -> Self {
+        Self::Internal { offset }
     }
 }
 
@@ -356,11 +368,70 @@ impl fmt::Display for BatchError {
                 f,
                 "the batch at offset {offset} declares wire version {found}, and I only parse {expected}"
             ),
+            Self::Internal { offset } => write!(
+                f,
+                "I got confused reading the batch at offset {offset}, which is a bug in acadsharp-rs rather than a problem with these bytes"
+            ),
         }
     }
 }
 
 impl std::error::Error for BatchError {}
+
+/// Why [`BatchReader::records_from`] would not resume at an offset.
+///
+/// This is not [`BatchError`] on purpose. Nothing is wrong with the bytes and
+/// nothing is wrong with this module; the number it was handed cannot name a
+/// record in this batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ResumeError {
+    /// The offset is inside the twelve byte batch header, so it is in front of
+    /// the first record rather than at it.
+    BeforeFirstRecord {
+        /// The offset that was asked for.
+        offset: u64,
+        /// The offset of the first record, which is [`BATCH_HEADER_LEN`].
+        first_record: u64,
+    },
+    /// The offset is past the end of this batch.
+    PastEndOfBatch {
+        /// The offset that was asked for.
+        offset: u64,
+        /// [`BatchReader::total_len`], which is one past the last byte.
+        total_len: u64,
+    },
+    /// Every record's `length` is a multiple of four, so every record boundary
+    /// is one too, and this offset is not.
+    NotAligned {
+        /// The offset that was asked for.
+        offset: u64,
+    },
+}
+
+impl fmt::Display for ResumeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BeforeFirstRecord {
+                offset,
+                first_record,
+            } => write!(
+                f,
+                "offset {offset} is inside the batch header, and the first record is at {first_record}"
+            ),
+            Self::PastEndOfBatch { offset, total_len } => write!(
+                f,
+                "offset {offset} is past this batch, which ends at {total_len}"
+            ),
+            Self::NotAligned { offset } => write!(
+                f,
+                "offset {offset} is not a multiple of four past the batch header, so no record starts there"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ResumeError {}
 
 // ---------------------------------------------------------------------------
 // Bounds checked reads
@@ -948,6 +1019,59 @@ pub enum Record<'a> {
     Unknown(Unknown<'a>),
 }
 
+impl Record<'_> {
+    /// The wire number this record carries.
+    ///
+    /// [`Record`] is `#[non_exhaustive]`, so every downstream match needs a
+    /// `_` arm, and without this that arm gets nothing at all: no number, no
+    /// payload, no way to log what went past. [`Record::Unknown`] carries its
+    /// own type but only covers types this build does not know, which is the
+    /// opposite half of the problem.
+    ///
+    /// ```
+    /// # use acadsharp_rs::batch::{BatchReader, Record, record_type};
+    /// # let mut bytes = Vec::new();
+    /// # bytes.extend_from_slice(b"VACB");
+    /// # bytes.extend_from_slice(&2u16.to_le_bytes());
+    /// # bytes.extend_from_slice(&1u16.to_le_bytes());
+    /// # bytes.extend_from_slice(&24u32.to_le_bytes());
+    /// # bytes.extend_from_slice(&1u16.to_le_bytes());
+    /// # bytes.extend_from_slice(&0u16.to_le_bytes());
+    /// # bytes.extend_from_slice(&24u32.to_le_bytes());
+    /// # bytes.extend_from_slice(&3u32.to_le_bytes());
+    /// # bytes.extend_from_slice(&1032u32.to_le_bytes());
+    /// # bytes.extend_from_slice(&0u64.to_le_bytes());
+    /// # let batch = BatchReader::new(&bytes)?;
+    /// # let record = batch.records().next().unwrap()?;
+    /// match record {
+    ///     Record::Line(_) => {}
+    ///     other => assert_eq!(other.record_type(), record_type::DOCUMENT_BEGIN),
+    /// }
+    /// # Ok::<(), acadsharp_rs::batch::BatchError>(())
+    /// ```
+    #[must_use]
+    pub const fn record_type(&self) -> u16 {
+        use record_type as t;
+
+        match self {
+            Self::DocumentBegin(_) => t::DOCUMENT_BEGIN,
+            Self::ViewBegin(_) => t::VIEW_BEGIN,
+            Self::Line(_) => t::LINE,
+            Self::Polyline(_) => t::POLYLINE,
+            Self::Arc(_) => t::ARC,
+            Self::Circle(_) => t::CIRCLE,
+            Self::Ellipse(_) => t::ELLIPSE,
+            Self::Spline(_) => t::SPLINE,
+            Self::Polygon(_) => t::POLYGON,
+            Self::Text(_) => t::TEXT,
+            Self::Warning(_) => t::WARNING,
+            Self::ViewEnd(_) => t::VIEW_END,
+            Self::DocumentEnd(_) => t::DOCUMENT_END,
+            Self::Unknown(u) => u.record_type,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The reader
 // ---------------------------------------------------------------------------
@@ -1051,13 +1175,84 @@ impl<'a> BatchReader<'a> {
     /// refilling that buffer while a record is still alive.
     #[must_use]
     pub fn records(&self) -> Records<'a> {
+        self.walk_from(0)
+    }
+
+    /// Every record from `offset` on, where `offset` is one a
+    /// [`Records::offset`] handed out earlier for this same batch.
+    ///
+    /// This is what a caller needs to stop in the middle of a batch and pick
+    /// the walk up later without either re-walking from the first record (a
+    /// batch of 64 KiB of `Line` records is about 900 of them, so resuming
+    /// once per record is 400,000 steps instead of 900) or writing a second
+    /// copy of the framing rules.
+    ///
+    /// # Errors
+    ///
+    /// [`ResumeError`] when the offset is inside the batch header, past the
+    /// end of the batch, or not a multiple of four past the header. Those are
+    /// the checks that are free. An offset that is aligned and inside the
+    /// batch but lands in the middle of a record is **not** caught: finding
+    /// that out means walking from the first record, which is the work this
+    /// function exists to skip. What comes out of a walk started there is
+    /// still bounded and still refused or read, it is just not the records the
+    /// producer wrote, so pass an offset this batch gave you.
+    ///
+    /// ```
+    /// # use acadsharp_rs::batch::{BatchReader, Record};
+    /// # let mut bytes = Vec::new();
+    /// # bytes.extend_from_slice(b"VACB");
+    /// # bytes.extend_from_slice(&2u16.to_le_bytes());
+    /// # bytes.extend_from_slice(&1u16.to_le_bytes());
+    /// # bytes.extend_from_slice(&48u32.to_le_bytes());
+    /// # for view_count in [3u32, 4] {
+    /// #     bytes.extend_from_slice(&1u16.to_le_bytes());
+    /// #     bytes.extend_from_slice(&0u16.to_le_bytes());
+    /// #     bytes.extend_from_slice(&24u32.to_le_bytes());
+    /// #     bytes.extend_from_slice(&view_count.to_le_bytes());
+    /// #     bytes.extend_from_slice(&1032u32.to_le_bytes());
+    /// #     bytes.extend_from_slice(&0u64.to_le_bytes());
+    /// # }
+    /// let batch = BatchReader::new(&bytes)?;
+    /// let mut records = batch.records();
+    /// records.next();
+    /// let saved = records.offset();
+    ///
+    /// let resumed: Vec<_> = batch.records_from(saved)?.collect();
+    /// let straight_through: Vec<_> = records.collect();
+    /// assert_eq!(resumed, straight_through);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn records_from(&self, offset: u64) -> Result<Records<'a>, ResumeError> {
+        let header = BATCH_HEADER_LEN as u64;
+        if offset < header {
+            return Err(ResumeError::BeforeFirstRecord {
+                offset,
+                first_record: header,
+            });
+        }
+        let total_len = self.total_len() as u64;
+        if offset > total_len {
+            return Err(ResumeError::PastEndOfBatch { offset, total_len });
+        }
+        let pos = offset - header;
+        if !pos.is_multiple_of(4) {
+            return Err(ResumeError::NotAligned { offset });
+        }
+        // `pos <= payload.len()` from the bound above, so this fits a usize.
+        Ok(self.walk_from(pos as usize))
+    }
+
+    fn walk_from(&self, pos: usize) -> Records<'a> {
         Records {
             payload: self.payload,
-            pos: 0,
-            // One per smallest possible record, plus one. A record shorter than
-            // its own header is already refused, so this bound is what turns a
-            // mistake in that rule into a failed parse rather than a hang.
-            budget: self.payload.len() as u64 / RECORD_HEADER_LEN + 1,
+            pos,
+            // One per smallest possible record left, plus one. A record shorter
+            // than its own header is already refused, so this bound is what
+            // turns a mistake in that rule into a failed parse rather than a
+            // hang. It counts from `pos` so resuming does not hand out a budget
+            // for records already walked.
+            budget: (self.payload.len() - pos) as u64 / RECORD_HEADER_LEN + 1,
             stopped: false,
         }
     }
@@ -1112,33 +1307,42 @@ impl<'a> Records<'a> {
         BATCH_HEADER_LEN as u64 + self.pos as u64
     }
 
+    /// A `Records` with its cursor and its iteration bound planted, so the two
+    /// backstops that are unreachable by construction can be watched firing.
+    ///
+    /// There is no way to reach either from bytes, which is the point of them,
+    /// and an error variant nothing ever asserts is an error variant nobody
+    /// knows is wired up.
+    #[cfg(test)]
+    const fn planted(payload: &'a [u8], pos: usize, budget: u64) -> Self {
+        Self {
+            payload,
+            pos,
+            budget,
+            stopped: false,
+        }
+    }
+
     fn step(&mut self) -> Result<Record<'a>, BatchError> {
         let at = self.offset();
         if self.budget == 0 {
-            return Err(BatchError::corrupt(at, Reason::IterationBound));
+            return Err(BatchError::internal(at));
         }
         self.budget -= 1;
 
         let rest = Fields::new(
             self.payload
                 .get(self.pos..)
-                .ok_or(BatchError::corrupt(at, Reason::Truncated))?,
+                .ok_or(BatchError::internal(at))?,
         );
         let remaining = rest.bytes.len() as u64;
         if remaining < RECORD_HEADER_LEN {
             return Err(BatchError::corrupt(at, Reason::ShortRecordHeader));
         }
 
-        let kind = rest
-            .read_u16(0)
-            .ok_or(BatchError::corrupt(at, Reason::Truncated))?;
-        let reserved = rest
-            .read_u16(2)
-            .ok_or(BatchError::corrupt(at, Reason::Truncated))?;
-        let length = u64::from(
-            rest.read_u32(4)
-                .ok_or(BatchError::corrupt(at, Reason::Truncated))?,
-        );
+        let kind = rest.read_u16(0).ok_or(BatchError::internal(at))?;
+        let reserved = rest.read_u16(2).ok_or(BatchError::internal(at))?;
+        let length = u64::from(rest.read_u32(4).ok_or(BatchError::internal(at))?);
 
         // The four framing rules, in the order WIRE.md states them, then the
         // reserved rule. Rule 2 is what keeps the cursor moving.
@@ -1157,12 +1361,11 @@ impl<'a> Records<'a> {
 
         // Every conversion below is bounded by `length <= remaining`, which is
         // bounded by the payload slice, so it fits a usize on any host.
-        let record_len =
-            usize::try_from(length).map_err(|_| BatchError::corrupt(at, Reason::Truncated))?;
+        let record_len = usize::try_from(length).map_err(|_| BatchError::internal(at))?;
         let payload_len = record_len - (RECORD_HEADER_LEN as usize);
         let payload = Fields::new(
             rest.read_slice(RECORD_HEADER_LEN as usize, payload_len)
-                .ok_or(BatchError::corrupt(at, Reason::Truncated))?,
+                .ok_or(BatchError::internal(at))?,
         );
         self.pos += record_len;
 
@@ -1311,12 +1514,12 @@ fn decode_polyline<'a>(p: Fields<'a>, length: u64, at: u64) -> Result<Polyline<'
     let bulge_bytes = bytes_for(8 * bulge_count, at)?;
     let vertices = p
         .read_slice(56, vertex_bytes)
-        .ok_or(BatchError::corrupt(at, Reason::Truncated))?;
+        .ok_or(BatchError::internal(at))?;
     // 56 + vertex_bytes cannot overflow: the read above proves it is inside a
     // slice that already fits a usize.
     let bulges = p
         .read_slice(56 + vertex_bytes, bulge_bytes)
-        .ok_or(BatchError::corrupt(at, Reason::Truncated))?;
+        .ok_or(BatchError::internal(at))?;
     Ok(Polyline {
         prologue: prologue(p, at)?,
         closed: closed != 0,
@@ -1345,13 +1548,13 @@ fn decode_spline<'a>(p: Fields<'a>, length: u64, at: u64) -> Result<Spline<'a>, 
     let weight_bytes = bytes_for(8 * weight_count, at)?;
     let knots = p
         .read_slice(40, knot_bytes)
-        .ok_or(BatchError::corrupt(at, Reason::Truncated))?;
+        .ok_or(BatchError::internal(at))?;
     let controls = p
         .read_slice(40 + knot_bytes, control_bytes)
-        .ok_or(BatchError::corrupt(at, Reason::Truncated))?;
+        .ok_or(BatchError::internal(at))?;
     let weights = p
         .read_slice(40 + knot_bytes + control_bytes, weight_bytes)
-        .ok_or(BatchError::corrupt(at, Reason::Truncated))?;
+        .ok_or(BatchError::internal(at))?;
     Ok(Spline {
         prologue: prologue(p, at)?,
         degree: u32_at(p, 16, at)?,
@@ -1372,9 +1575,7 @@ fn decode_text<'a>(p: Fields<'a>, length: u64, at: u64) -> Result<Text<'a>, Batc
     }
     // The scan stops at 56. Past that are the drawing's own bytes, and reading
     // those as f64s would refuse a perfectly good text record for nothing.
-    let numbers = p
-        .read_slice(16, 40)
-        .ok_or(BatchError::corrupt(at, Reason::Truncated))?;
+    let numbers = p.read_slice(16, 40).ok_or(BatchError::internal(at))?;
     if !all_finite(numbers) {
         return Err(BatchError::corrupt(at, Reason::NonFiniteFloat));
     }
@@ -1429,9 +1630,7 @@ fn prologue(p: Fields<'_>, at: u64) -> Result<Prologue, BatchError> {
 
 /// Every `f64` from `from` to the end of the payload is finite.
 fn finite(p: Fields<'_>, from: usize, at: u64) -> Result<(), BatchError> {
-    let tail = p
-        .tail(from)
-        .ok_or(BatchError::corrupt(at, Reason::Truncated))?;
+    let tail = p.tail(from).ok_or(BatchError::internal(at))?;
     if all_finite(tail) {
         Ok(())
     } else {
@@ -1441,35 +1640,93 @@ fn finite(p: Fields<'_>, from: usize, at: u64) -> Result<(), BatchError> {
 
 /// A byte count computed in `u64`, brought down to a `usize` once.
 fn bytes_for(count: u64, at: u64) -> Result<usize, BatchError> {
-    usize::try_from(count).map_err(|_| BatchError::corrupt(at, Reason::Truncated))
+    usize::try_from(count).map_err(|_| BatchError::internal(at))
 }
 
 fn u32_at(p: Fields<'_>, offset: usize, at: u64) -> Result<u32, BatchError> {
-    p.read_u32(offset)
-        .ok_or(BatchError::corrupt(at, Reason::Truncated))
+    p.read_u32(offset).ok_or(BatchError::internal(at))
 }
 
 fn u64_at(p: Fields<'_>, offset: usize, at: u64) -> Result<u64, BatchError> {
-    p.read_u64(offset)
-        .ok_or(BatchError::corrupt(at, Reason::Truncated))
+    p.read_u64(offset).ok_or(BatchError::internal(at))
 }
 
 fn f64_at(p: Fields<'_>, offset: usize, at: u64) -> Result<f64, BatchError> {
-    p.read_f64(offset)
-        .ok_or(BatchError::corrupt(at, Reason::Truncated))
+    p.read_f64(offset).ok_or(BatchError::internal(at))
 }
 
 fn f64x3_at(p: Fields<'_>, offset: usize, at: u64) -> Result<[f64; 3], BatchError> {
-    p.read_f64x3(offset)
-        .ok_or(BatchError::corrupt(at, Reason::Truncated))
+    p.read_f64x3(offset).ok_or(BatchError::internal(at))
 }
 
 fn string_at<'a>(p: Fields<'a>, offset: usize, len: u64, at: u64) -> Result<&'a str, BatchError> {
     let len = bytes_for(len, at)?;
-    let bytes = p
-        .read_slice(offset, len)
-        .ok_or(BatchError::corrupt(at, Reason::Truncated))?;
+    let bytes = p.read_slice(offset, len).ok_or(BatchError::internal(at))?;
     // The padding past `len` is not checked and not refused: it is not the
     // string, and a producer is free to put whatever it likes there.
     std::str::from_utf8(bytes).map_err(|_| BatchError::corrupt(at, Reason::InvalidUtf8))
+}
+
+// ---------------------------------------------------------------------------
+// The two backstops, watched firing
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One well formed `DocumentBegin`, with no batch header in front of it,
+    /// which is what `Records` walks.
+    fn one_record_payload() -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&record_type::DOCUMENT_BEGIN.to_le_bytes());
+        p.extend_from_slice(&0u16.to_le_bytes());
+        p.extend_from_slice(&24u32.to_le_bytes());
+        p.extend_from_slice(&3u32.to_le_bytes());
+        p.extend_from_slice(&1032u32.to_le_bytes());
+        p.extend_from_slice(&0u64.to_le_bytes());
+        assert_eq!(p.len(), 24);
+        p
+    }
+
+    #[test]
+    fn a_spent_iteration_bound_is_an_internal_error() {
+        // The same bytes read fine with a budget, so the only thing this test
+        // changes is the backstop.
+        let payload = one_record_payload();
+        let mut healthy = Records::planted(&payload, 0, 1);
+        assert!(matches!(healthy.next(), Some(Ok(Record::DocumentBegin(_)))));
+
+        let mut spent = Records::planted(&payload, 0, 0);
+        assert_eq!(
+            spent.next(),
+            Some(Err(BatchError::Internal { offset: 12 })),
+            "a record that did not advance the cursor is my bug, not corrupt input"
+        );
+        assert!(spent.next().is_none(), "and the walk stops there");
+    }
+
+    #[test]
+    fn a_cursor_past_the_payload_is_an_internal_error() {
+        // The other backstop. `step` cannot be reached this way from bytes,
+        // which is exactly why it needs planting to be watched at all.
+        let payload = one_record_payload();
+        let past = payload.len() + 1;
+        let mut wrong = Records::planted(&payload, past, 16);
+        assert_eq!(
+            wrong.step(),
+            Err(BatchError::Internal {
+                offset: 12 + past as u64
+            })
+        );
+    }
+
+    #[test]
+    fn an_internal_error_says_whose_bug_it_is() {
+        let e = BatchError::Internal { offset: 44 };
+        assert_eq!(e.offset(), 44);
+        let rendered = e.to_string();
+        assert!(rendered.contains("offset 44"), "{rendered}");
+        assert!(rendered.contains("bug in acadsharp-rs"), "{rendered}");
+    }
 }

@@ -7,7 +7,7 @@
 
 mod wire;
 
-use acadsharp_rs::batch::{BatchReader, Record};
+use acadsharp_rs::batch::{BatchReader, Record, ResumeError};
 use wire::{
     Builder, CANONICAL_TYPES, canonical, doubles_of, handle_of, probe_handle, probe_value,
     probe_values, type_of,
@@ -587,4 +587,91 @@ fn the_reader_reports_where_it_is_in_the_batch() {
     records.next().expect("an Arc").expect("it parses");
     assert_eq!(records.offset(), 12 + 72 + 96);
     assert!(records.next().is_none());
+}
+
+#[test]
+fn resuming_at_a_saved_offset_yields_the_same_tail() {
+    // Walk a batch of every record type, and at each boundary check that a
+    // reader started there sees exactly what the reader that walked straight
+    // through is about to see. Without this a stream that wants to stop in the
+    // middle of a batch either re-walks from record zero, which is quadratic,
+    // or writes a second copy of the framing rules.
+    let batch = Builder::new()
+        .records(
+            &CANONICAL_TYPES
+                .iter()
+                .map(|t| canonical(*t))
+                .collect::<Vec<_>>(),
+        )
+        .build();
+    let reader = BatchReader::new(&batch).expect("the batch parses");
+
+    let mut straight = reader.records();
+    let mut boundaries = 0;
+    loop {
+        let saved = straight.offset();
+        let tail: Vec<_> = straight.clone().collect();
+        let resumed: Vec<_> = reader
+            .records_from(saved)
+            .expect("a saved offset is a boundary")
+            .collect();
+        assert_eq!(
+            resumed, tail,
+            "resuming at {saved} must see the same records as walking there"
+        );
+        boundaries += 1;
+        if straight.next().is_none() {
+            break;
+        }
+    }
+    // The positive control. One boundary is the empty tail at the end, so this
+    // also says the loop actually visited every record.
+    assert_eq!(boundaries, CANONICAL_TYPES.len() + 1);
+}
+
+#[test]
+fn resuming_at_the_end_of_the_batch_yields_nothing() {
+    let batch = Builder::new().record(wire::view_end(0, 7)).build();
+    let reader = BatchReader::new(&batch).expect("the batch parses");
+    let end = reader.total_len() as u64;
+    assert_eq!(
+        reader
+            .records_from(end)
+            .expect("the end is a boundary")
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn an_offset_that_cannot_name_a_record_is_refused() {
+    let batch = Builder::new().record(wire::view_end(0, 7)).build();
+    let reader = BatchReader::new(&batch).expect("the batch parses");
+
+    // Inside the twelve byte header, so in front of the first record.
+    assert_eq!(
+        reader.records_from(4).map(|_| ()).unwrap_err(),
+        ResumeError::BeforeFirstRecord {
+            offset: 4,
+            first_record: 12,
+        }
+    );
+    // Past the batch.
+    let total = reader.total_len() as u64;
+    assert_eq!(
+        reader.records_from(total + 4).map(|_| ()).unwrap_err(),
+        ResumeError::PastEndOfBatch {
+            offset: total + 4,
+            total_len: total,
+        }
+    );
+    // Inside the batch, but no record length is a multiple of four away from
+    // the header, so nothing starts there.
+    assert_eq!(
+        reader.records_from(13).map(|_| ()).unwrap_err(),
+        ResumeError::NotAligned { offset: 13 }
+    );
+    // And it renders as something a person can act on.
+    let rendered = reader.records_from(13).map(|_| ()).unwrap_err().to_string();
+    assert!(rendered.contains("13"), "{rendered}");
 }
