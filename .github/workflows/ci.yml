@@ -171,12 +171,6 @@ jobs:
     # This job carries no conditional and swallows no failure, on purpose. A
     # skipped check is the same colour as a passing one, and a job that can go
     # green having tested nothing is worth less than no job at all.
-    #
-    # KNOWN RED, and honestly so: the "points back at this crate" step below
-    # refuses every acadsharp-rs-tests commit that exists today, because the
-    # path dependency it looks for is acadsharp-rs-tests#1 (H1.1) and that issue
-    # is still open. Land H1.1, bump SUITE_REV, and this goes green. Silencing
-    # it instead would give the repo a check that proves nothing.
     name: Suite (acadsharp-rs-tests)
     runs-on: ubuntu-latest
     env:
@@ -241,25 +235,6 @@ jobs:
           fi
           echo "Checked out $SUITE_REPO at $got"
 
-      - name: The pinned suite points back at this crate
-        env:
-          SUITE_REV: ${{ steps.pin.outputs.rev }}
-        run: |
-          set -euo pipefail
-          manifest="${GITHUB_WORKSPACE}/acadsharp-rs-tests/Cargo.toml"
-          # The suite tests this crate only if it builds against this checkout.
-          # Without the path dependency it resolves `acadsharp-rs` from
-          # somewhere else, or does not depend on it at all, and then a green
-          # run says nothing whatsoever about the PR that produced it. That is
-          # the difference between this job and a decoration.
-          if grep -Eq '^[[:space:]]*acadsharp-rs[[:space:]]*=.*path[[:space:]]*=[[:space:]]*"\.\./acadsharp-rs"' "$manifest"; then
-            echo "The pinned suite depends on ../acadsharp-rs by path, so its tests are about this tree."
-            exit 0
-          fi
-          echo "::error file=SUITE_REV::the pinned suite does not point back at this crate. $SUITE_REV has no acadsharp-rs = { path = \"../acadsharp-rs\" } in its Cargo.toml, so running its tests would prove nothing about this PR."
-          echo "::error file=SUITE_REV::that path dependency is libviprs/acadsharp-rs-tests#1 (H1.1), which is still open, so every suite commit that exists today lands here. Fix it by landing H1.1 and moving SUITE_REV onto a suite commit that carries the dependency. Do not fix it by making this job skip."
-          exit 1
-
       - name: SUITE_REV obeys the merged-only rule
         env:
           SUITE_REV: ${{ steps.pin.outputs.rev }}
@@ -273,17 +248,90 @@ jobs:
           # branch, so `tests/suite_pin_check.rs` drives it instead.
           acadsharp-rs/tools/suite_pin_check.sh "$status" "$SUITE_REV"
 
+      # Before the resolution check below, because that check is `cargo
+      # metadata` and cargo has to exist first.
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: acadsharp-rs-tests
 
-      # The suite has no `fetch-native-header` action at the pinned commit: its
-      # .github tree is three workflow files and nothing else. So there is no
-      # step here calling one. When the suite grows that action, add the step
-      # then. I would rather leave it out than add a conditional step for a path
-      # that does not exist, because from a distance that conditional is
-      # indistinguishable from the skip this job refuses to have.
+      - name: The pinned suite resolves this crate as a normal path dependency
+        env:
+          SUITE_REV: ${{ steps.pin.outputs.rev }}
+        run: |
+          set -euo pipefail
+          suite="${GITHUB_WORKSPACE}/acadsharp-rs-tests"
+          crate="$(realpath "${GITHUB_WORKSPACE}/acadsharp-rs")"
+          # The suite tests this crate only if it builds against this checkout.
+          # Otherwise it resolves `acadsharp-rs` from somewhere else, or does not
+          # depend on it at all, and a green run says nothing whatsoever about
+          # the PR that produced it. That is the difference between this job and
+          # a decoration.
+          #
+          # Asking cargo rather than grepping the manifest, because a grep proves
+          # the declaration and not the resolution: a `[patch]`, a workspace
+          # member, `optional = true` or the entry sitting under
+          # `[dev-dependencies]` all satisfy a text match and all change what
+          # actually gets built. The suite's own `tests/counterpart_pin.rs`
+          # makes the same three assertions from the other side.
+          #
+          # stdout and stderr go to separate files rather than into one
+          # variable. `meta="$(cargo metadata ... 2>&1)"` reads well and breaks
+          # on every successful run, because cargo's progress lines land on
+          # stderr and jq then chokes on "Updating crates.io index" before it
+          # ever sees a brace. I watched it do exactly that.
+          tmp="$(mktemp -d)"
+          if ! cargo metadata --format-version 1 --manifest-path "$suite/Cargo.toml" \
+            >"$tmp/meta.json" 2>"$tmp/meta.err"; then
+            echo "::error file=SUITE_REV::cargo could not resolve the pinned suite's manifest with this crate beside it:"
+            cat "$tmp/meta.err"
+            exit 1
+          fi
+
+          # 1. A package called acadsharp-rs is in the graph at all.
+          manifest="$(jq -r '[.packages[] | select(.name == "acadsharp-rs") | .manifest_path] | first // empty' "$tmp/meta.json")"
+          if [ -z "$manifest" ]; then
+            echo "::error file=SUITE_REV::the pinned suite does not point back at this crate. cargo resolved no package called acadsharp-rs from $SUITE_REV, so running its tests would prove nothing about this PR."
+            exit 1
+          fi
+
+          # 2. It is this checkout and not a registry copy or some other tree.
+          #    `source` is null exactly for a path dependency.
+          source="$(jq -r '[.packages[] | select(.name == "acadsharp-rs") | .source] | first' "$tmp/meta.json")"
+          if [ "$source" != "null" ]; then
+            echo "::error file=SUITE_REV::the pinned suite resolves acadsharp-rs from $source rather than from this checkout, so its tests are not about this PR."
+            exit 1
+          fi
+          if [ "$(realpath "$manifest")" != "$crate/Cargo.toml" ]; then
+            echo "::error file=SUITE_REV::the pinned suite resolves acadsharp-rs at $(realpath "$manifest") and this PR's checkout is $crate, so its tests are about some other tree."
+            exit 1
+          fi
+
+          # 3. It is a normal dependency. A dev-dependency or an optional one
+          #    that is off still shows up in `packages` above, and still passes
+          #    a grep, while an ordinary build of the suite links none of it.
+          #    `dep_kinds` spells a normal dependency as a null kind.
+          root="$(jq -r '.resolve.root' "$tmp/meta.json")"
+          kinds="$(jq -c --arg root "$root" '[.resolve.nodes[] | select(.id == $root) | .deps[] | select(.name == "acadsharp_rs") | .dep_kinds] | first // empty' "$tmp/meta.json")"
+          if [ -z "$kinds" ]; then
+            echo "::error file=SUITE_REV::cargo resolved acadsharp-rs but the pinned suite's own package does not depend on it, so nothing it builds reaches this crate."
+            exit 1
+          fi
+          if ! printf '%s' "$kinds" | jq -e 'any(.[]; .kind == null)' >/dev/null; then
+            echo "::error file=SUITE_REV::acadsharp-rs has to be a normal dependency of the pinned suite, and cargo says it is $kinds."
+            exit 1
+          fi
+          echo "The pinned suite depends on this checkout ($crate) as a normal path dependency, so its tests are about this tree."
+
+      # Without this the suite runs its non-native subset and goes green having
+      # compiled every native test out, which is the same colour as a pass. The
+      # crate's own `tests/native_lane_is_live.rs` guard cannot see over the
+      # repo boundary, so the archive has to be here before the suite builds.
+      # The steps live in a composite action because `Test` needs exactly the
+      # same three and the pin has to move in one place.
+      - name: Fetch the pinned native archive
+        uses: ./acadsharp-rs/.github/actions/fetch-native-archive
+
       - name: Run the pinned suite against this PR's tree
         working-directory: acadsharp-rs-tests
         env:
