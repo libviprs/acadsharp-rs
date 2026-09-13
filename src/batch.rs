@@ -13,7 +13,9 @@
 //! - **It never allocates.** Variable length payloads come back as borrowed
 //!   views ([`Vertices`], [`Scalars`], [`str`]) that read one element at a time
 //!   out of the batch buffer, so a declared count can never become a
-//!   reservation. The only bound this module recognises is bytes in hand.
+//!   reservation. The only bound this module recognises is bytes in hand. That
+//!   buys the allocation and the copy and not the pass: the finiteness rule is
+//!   eager, so a record's floats are read once at decode time either way.
 //! - **It never wraps.** Every length, count, offset and padding computation is
 //!   done in `u64`. Every count on this wire is a `u32`, so widening is what
 //!   bounds the whole computation: `64 + 24n + 8bc` maxes out around `1.4e11`,
@@ -77,6 +79,26 @@
 //! A stream is a run of batches back to back, so walking one is
 //! [`BatchReader::new`] followed by advancing the cursor by
 //! [`BatchReader::total_len`] until the bytes run out.
+
+//! # Why the hot path is `#[inline]`
+//!
+//! Everything here is a non-generic inherent method over rustc's inline
+//! threshold, so without the attribute no MIR is exported and a consumer crate
+//! makes a real call per record and per vertex, returning a 120 byte [`Record`]
+//! through an sret pointer and losing every chance to vectorize. A library
+//! cannot borrow its consumer's LTO setting, and this cannot be added later
+//! without a release, so [`Records::next`], the two element iterators, the view
+//! accessors and [`BatchReader::new`] carry it. The payload decoder behind them
+//! deliberately does not: its match is big enough that inlining it made a batch
+//! of `Ellipse` slower, measured, so the attribute stops at the framing loop.
+//!
+//! Measured from a consumer crate, best of five runs, aarch64:
+//!
+//! | loop | before | after |
+//! | --- | --- | --- |
+//! | 2730 `ViewEnd` records | 6.73 ns each | 3.56 ns each |
+//! | 910 `Line` records, a 64 KiB batch | 8.06 ns each | 5.91 ns each |
+//! | 1,000,000 vertices through `iter()` | 1.57 ns each | 0.92 ns each |
 
 #![forbid(unsafe_code)]
 
@@ -501,9 +523,18 @@ fn all_finite(bytes: &[u8]) -> bool {
 
 /// A run of 3D points, read one at a time out of the batch buffer.
 ///
-/// Nothing is copied and nothing is allocated, so a polyline at the default
-/// `max_polyline_points` costs the same as an empty one until something asks
-/// for a vertex.
+/// Nothing is copied and nothing is allocated: the view is a pointer and a
+/// length into the batch, and an element is read on the way past.
+///
+/// That is not the same as free, and this doc used to say a polyline at the
+/// default `max_polyline_points` cost the same as an empty one until something
+/// asked for a vertex. It does not. WIRE.md has me refuse a non-finite `f64`
+/// in a geometry record, I cannot do that lazily, so every vertex is read once
+/// at decode time whether anybody asks for one or not. Measured on the real
+/// 32 MB record: decoding it without touching a vertex is 1.047 ms and a bare
+/// finiteness scan of the same bytes is 1.042 ms, so the scan is the whole
+/// cost, one sequential pass. What the borrowed view buys is the allocation
+/// and the copy, not the pass.
 #[derive(Clone, Copy)]
 pub struct Vertices<'a> {
     bytes: &'a [u8],
@@ -523,12 +554,36 @@ impl<'a> Vertices<'a> {
     }
 
     /// Whether there are no points at all.
+    ///
+    /// This is `len() == 0` and not `bytes.is_empty()`. The two disagree on a
+    /// trailing remainder shorter than the stride, which the length rules make
+    /// unreachable, and an `is_empty` that can say no while `len` says zero is
+    /// a contradiction waiting for the day one of those rules changes.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
+        self.len() == 0
     }
 
     /// The point at `index`, or [`None`] past the end.
+    ///
+    /// A review asked for this to be one `as_chunks::<24>()` lookup instead of
+    /// the four checked reads below, measured at 1.23 ns a point against 0.68.
+    /// I could not reproduce that and I measured the other direction, best of
+    /// five runs from a consumer crate, walking a 100,000 point polyline index
+    /// by index the way a renderer following bulge spans does:
+    ///
+    /// | body | opaque index | plain index |
+    /// | --- | --- | --- |
+    /// | these four checked reads | 1.01 ns | 0.92 ns |
+    /// | one `as_chunks::<24>()` | 1.16 ns | 1.11 ns |
+    /// | one range read into a `[u8; 24]` | 4.41 ns | 4.19 ns |
+    ///
+    /// `as_chunks` divides the view's length by the stride, which is a
+    /// multiply-high and a shift that the four constant-offset reads do not
+    /// need, and the third one copies the point to the stack before reading it.
+    /// So this stays as it is. The bounds checks fold: `at` is the only thing
+    /// LLVM cannot see, and the three reads after it are at constant offsets.
+    #[inline]
     #[must_use]
     pub fn get(&self, index: usize) -> Option<[f64; 3]> {
         let at = index.checked_mul(Self::STRIDE)?;
@@ -536,6 +591,7 @@ impl<'a> Vertices<'a> {
     }
 
     /// Every point, in wire order.
+    #[inline]
     #[must_use]
     pub fn iter(&self) -> VertexIter<'a> {
         let (chunks, _) = self.bytes.as_chunks::<24>();
@@ -575,6 +631,18 @@ impl<'a> IntoIterator for &Vertices<'a> {
     }
 }
 
+/// By value too, because this is a `Copy` view over somebody else's bytes and
+/// `for v in polyline.vertices` failing while `for v in &polyline.vertices`
+/// works is a papercut with no reason behind it.
+impl<'a> IntoIterator for Vertices<'a> {
+    type Item = [f64; 3];
+    type IntoIter = VertexIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 /// Every point of a [`Vertices`], in wire order.
 #[derive(Clone, Debug)]
 pub struct VertexIter<'a> {
@@ -584,6 +652,7 @@ pub struct VertexIter<'a> {
 impl Iterator for VertexIter<'_> {
     type Item = [f64; 3];
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         Fields::new(self.inner.next()?).read_f64x3(0)
     }
@@ -591,13 +660,22 @@ impl Iterator for VertexIter<'_> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.inner.size_hint()
     }
+
+    /// Forwarded, so skipping is a pointer bump rather than a loop.
+    #[inline]
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        Fields::new(self.inner.nth(n)?).read_f64x3(0)
+    }
 }
 
 impl DoubleEndedIterator for VertexIter<'_> {
+    #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         Fields::new(self.inner.next_back()?).read_f64x3(0)
     }
 }
+
+impl ExactSizeIterator for VertexIter<'_> {}
 
 impl FusedIterator for VertexIter<'_> {}
 
@@ -630,12 +708,18 @@ impl<'a> Scalars<'a> {
     }
 
     /// Whether there are no scalars at all.
+    ///
+    /// `len() == 0`, for the reason [`Vertices::is_empty`] gives.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
+        self.len() == 0
     }
 
     /// The scalar at `index`, or [`None`] past the end.
+    ///
+    /// Two checked reads rather than an `as_chunks::<8>()` lookup, for the
+    /// reason [`Vertices::get`] measures out.
+    #[inline]
     #[must_use]
     pub fn get(&self, index: usize) -> Option<f64> {
         let at = index.checked_mul(Self::STRIDE)?;
@@ -643,6 +727,7 @@ impl<'a> Scalars<'a> {
     }
 
     /// Every scalar, in wire order.
+    #[inline]
     #[must_use]
     pub fn iter(&self) -> ScalarIter<'a> {
         let (chunks, _) = self.bytes.as_chunks::<8>();
@@ -680,6 +765,16 @@ impl<'a> IntoIterator for &Scalars<'a> {
     }
 }
 
+/// By value too, for the reason [`Vertices`] gives.
+impl<'a> IntoIterator for Scalars<'a> {
+    type Item = f64;
+    type IntoIter = ScalarIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 /// Every scalar of a [`Scalars`], in wire order.
 #[derive(Clone, Debug)]
 pub struct ScalarIter<'a> {
@@ -689,6 +784,7 @@ pub struct ScalarIter<'a> {
 impl Iterator for ScalarIter<'_> {
     type Item = f64;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         Some(f64::from_le_bytes(*self.inner.next()?))
     }
@@ -696,13 +792,22 @@ impl Iterator for ScalarIter<'_> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.inner.size_hint()
     }
+
+    /// Forwarded, so skipping is a pointer bump rather than a loop.
+    #[inline]
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        Some(f64::from_le_bytes(*self.inner.nth(n)?))
+    }
 }
 
 impl DoubleEndedIterator for ScalarIter<'_> {
+    #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         Some(f64::from_le_bytes(*self.inner.next_back()?))
     }
 }
+
+impl ExactSizeIterator for ScalarIter<'_> {}
 
 impl FusedIterator for ScalarIter<'_> {}
 
@@ -1097,6 +1202,7 @@ impl<'a> BatchReader<'a> {
     /// [`BatchError::AbiMismatch`] when the `wire_version` is not
     /// [`WIRE_VERSION`], and [`BatchError::CorruptInput`] when the buffer is
     /// too short, the magic is wrong, or `payload_length` runs past the end.
+    #[inline]
     pub fn new(bytes: &'a [u8]) -> Result<Self, BatchError> {
         let f = Fields::new(bytes);
         let magic = f
@@ -1173,6 +1279,7 @@ impl<'a> BatchReader<'a> {
     /// The items borrow the batch buffer rather than the iterator, so nothing
     /// is copied out of it and the borrow checker is what stops a caller
     /// refilling that buffer while a record is still alive.
+    #[inline]
     #[must_use]
     pub fn records(&self) -> Records<'a> {
         self.walk_from(0)
@@ -1283,6 +1390,7 @@ pub struct Records<'a> {
 impl<'a> Iterator for Records<'a> {
     type Item = Result<Record<'a>, BatchError>;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if self.stopped || self.pos >= self.payload.len() {
             self.stopped = true;
@@ -1323,6 +1431,7 @@ impl<'a> Records<'a> {
         }
     }
 
+    #[inline]
     fn step(&mut self) -> Result<Record<'a>, BatchError> {
         let at = self.offset();
         if self.budget == 0 {

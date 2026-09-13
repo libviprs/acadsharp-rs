@@ -568,6 +568,52 @@ fn the_borrowed_views_iterate_forwards_backwards_and_by_reference() {
             let bulges_back: Vec<f64> = p.bulges.iter().rev().collect();
             assert_eq!(bulges_back[0], probe_value(4, 18));
             assert_eq!(p.vertices.iter().size_hint(), (4, Some(4)));
+
+            // By value too. These are `Copy` views over somebody else's bytes,
+            // so `for v in p.vertices` failing while `for v in &p.vertices`
+            // works was a papercut with nothing behind it.
+            let by_value: Vec<[f64; 3]> = p.vertices.into_iter().collect();
+            assert_eq!(by_value, forwards);
+            let bulges_by_value: Vec<f64> = p.bulges.into_iter().collect();
+            assert_eq!(bulges_by_value.len(), 4);
+
+            // ExactSizeIterator, so a caller can size a buffer before walking.
+            assert_eq!(p.vertices.iter().len(), 4);
+            assert_eq!(p.bulges.iter().len(), 4);
+
+            // `nth` is forwarded to the slice iterator rather than looping.
+            assert_eq!(p.vertices.iter().nth(2), Some(forwards[2]));
+            assert_eq!(p.vertices.iter().nth(4), None);
+            assert_eq!(p.bulges.iter().nth(3), p.bulges.get(3));
+
+            // `get` and the iterator agree at every index, including past the
+            // end, which is the pair of accessors most likely to drift.
+            for i in 0..=p.vertices.len() {
+                assert_eq!(p.vertices.get(i), p.vertices.iter().nth(i));
+                assert_eq!(p.bulges.get(i), p.bulges.iter().nth(i));
+            }
+
+            // is_empty is len() == 0 rather than a claim about the bytes.
+            assert!(!p.vertices.is_empty());
+            assert_eq!(p.vertices.len(), 4);
+        }
+        other => panic!("expected a Polyline, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_empty_view_is_empty_by_length_and_by_bytes() {
+    // The other half of the is_empty change: a polyline with no vertices and
+    // no bulges has to agree with itself both ways.
+    let record = wire::polyline(1, false, [0.0, 0.0, 1.0], &[], &[]);
+    match read_one(&Builder::new().record(record).build()) {
+        Record::Polyline(p) => {
+            assert_eq!(p.vertices.len(), 0);
+            assert!(p.vertices.is_empty());
+            assert_eq!(p.bulges.len(), 0);
+            assert!(p.bulges.is_empty());
+            assert_eq!(p.vertices.iter().count(), 0);
+            assert_eq!(p.vertices.get(0), None);
         }
         other => panic!("expected a Polyline, got {other:?}"),
     }
