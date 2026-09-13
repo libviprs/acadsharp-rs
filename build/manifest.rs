@@ -230,6 +230,14 @@ pub enum LinkInfoError {
         manifest: String,
         field: &'static str,
     },
+    /// A control character in one of the plain string fields, which splits a
+    /// cargo directive exactly the way one in a library name does.
+    Unprintable {
+        manifest: String,
+        field: &'static str,
+        value: String,
+        bad: char,
+    },
     /// `abi_fingerprint` is not 16 lowercase hex characters with no prefix.
     Fingerprint {
         manifest: String,
@@ -325,6 +333,22 @@ impl fmt::Display for LinkInfoError {
                 f,
                 "{manifest} carries `\"{field}\": \"\"`. Absent is not empty: an empty string is \
                  a path nobody wrote, and a field that was not measured is left out."
+            ),
+            Self::Unprintable {
+                manifest,
+                field,
+                value,
+                bad,
+            } => write!(
+                f,
+                "`{field}` in {manifest} is {value:?}, and {bad:?} is a control character I will \
+                 not repeat to cargo. The build-script protocol is one directive per line of \
+                 stdout, so a newline in a value I print is not a broken string: it is the end of \
+                 one directive and the start of another one this manifest chose. \
+                 `artifact_version` is the live one, because it goes out as \
+                 `cargo::metadata=artifact_version=`, and a version pin does not save you either \
+                 (a `3.7.1-viprs.*` glob matches a newline quite happily). Fix the manifest, or \
+                 the archive it came out of."
             ),
             Self::Fingerprint {
                 manifest,
@@ -422,13 +446,20 @@ impl Raw {
             });
         }
 
-        let artifact_version = required_text(self.artifact_version, "artifact_version", &at)?;
-        let acadsharp_version = required_text(self.acadsharp_version, "acadsharp_version", &at)?;
-        let acadsharp_commit = required_text(self.acadsharp_commit, "acadsharp_commit", &at)?;
-        let dotnet_sdk = required_text(self.dotnet_sdk, "dotnet_sdk", &at)?;
-        let target = required_text(self.target, "target", &at)?;
-        let platform = required_text(self.platform, "platform", &at)?;
-        let cpu = required_text(self.cpu, "cpu", &at)?;
+        // `printable_text` rather than `required_text` for all seven. These are
+        // the fields nothing used to look at, and `artifact_version` reaches
+        // cargo directly through `cargo::metadata=artifact_version=`. The rest
+        // land in refusal messages, which is a terminal rather than a
+        // directive, but a rule with an exception in it is a rule somebody has
+        // to remember, and these seven have no legitimate reason to hold a
+        // control character.
+        let artifact_version = printable_text(self.artifact_version, "artifact_version", &at)?;
+        let acadsharp_version = printable_text(self.acadsharp_version, "acadsharp_version", &at)?;
+        let acadsharp_commit = printable_text(self.acadsharp_commit, "acadsharp_commit", &at)?;
+        let dotnet_sdk = printable_text(self.dotnet_sdk, "dotnet_sdk", &at)?;
+        let target = printable_text(self.target, "target", &at)?;
+        let platform = printable_text(self.platform, "platform", &at)?;
+        let cpu = printable_text(self.cpu, "cpu", &at)?;
 
         let abi_version = required_u32(self.abi_version, "abi_version", &at)?;
         let wire_version = required_u32(self.wire_version, "wire_version", &at)?;
@@ -720,6 +751,38 @@ fn required_text(
         });
     }
     Ok(text)
+}
+
+/// One of the seven plain string fields: present, not empty, and with nothing
+/// in it that would split a line.
+fn printable_text(
+    value: Option<String>,
+    field: &'static str,
+    at: &str,
+) -> Result<String, LinkInfoError> {
+    let text = required_text(value, field, at)?;
+    check_printable(&text, field, at)?;
+    Ok(text)
+}
+
+/// Refuses a control character anywhere in a value this reader repeats.
+///
+/// Same rule as the library names and the archive root, applied to the fields
+/// that were left out of both. Deliberately narrow: everything a version, a
+/// triple or an SDK number could legitimately hold is printable, so this
+/// refuses `char::is_control` and nothing else. A space, a `+`, a `~` and every
+/// non-ASCII letter all survive a single directive line and are none of this
+/// check's business.
+pub fn check_printable(value: &str, field: &'static str, at: &str) -> Result<(), LinkInfoError> {
+    match value.chars().find(|c| c.is_control()) {
+        None => Ok(()),
+        Some(bad) => Err(LinkInfoError::Unprintable {
+            manifest: at.to_string(),
+            field,
+            value: value.to_string(),
+            bad,
+        }),
+    }
 }
 
 fn required_u32(value: Option<u64>, field: &'static str, at: &str) -> Result<u32, LinkInfoError> {
