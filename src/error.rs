@@ -68,7 +68,7 @@ pub enum Error {
     ///
     /// Spelled with two `l`s, which is the spelling the rest of this crate
     /// uses. The C constant is `VIPRS_ACAD_CANCELED` and stays that way in
-    /// [`crate::ffi`], where it is a transcription.
+    /// the `ffi` module, where it is a transcription.
     Cancelled,
     /// A bound in [`crate::Limits`] was reached, and nothing else. Terminal
     /// for a decode.
@@ -136,7 +136,7 @@ pub enum Error {
 impl Error {
     /// Maps a native result code onto this type.
     ///
-    /// [`ffi::VIPRS_ACAD_OK`] is success and maps to [`None`]; everything else
+    /// `VIPRS_ACAD_OK` is success and maps to [`None`]; everything else
     /// maps to a variant, and a code the header does not declare maps to
     /// [`Error::Native`].
     ///

@@ -249,6 +249,54 @@ fn no_unsafe_impl_anywhere_in_the_crate() {
 }
 
 #[test]
+fn the_raw_ffi_module_is_not_part_of_the_documented_surface() {
+    // It has to stay `pub`: the tests in this directory compile against it
+    // from outside the crate, which is the whole point of testing a
+    // transcription. It must not stay documented. Measured from a consumer
+    // crate, `*mut acadsharp_rs::ffi::viprs_acad_handle` and the
+    // `unsafe extern "C"` function values are reachable, which contradicts the
+    // first paragraph of `src/lib.rs` and freezes eleven C signatures into a
+    // 0.1.0 semver promise. `docs/UPGRADING.md` exists because the header does
+    // move.
+    let root = read("lib.rs");
+    let mut lines = root.lines().enumerate();
+    let declaration = lines
+        .find(|(_, line)| line.trim() == "pub mod ffi;")
+        .map(|(number, _)| number)
+        .expect("src/lib.rs declares `pub mod ffi;`");
+    let before: Vec<&str> = root.lines().take(declaration).collect();
+    let attributes: Vec<&str> = before
+        .iter()
+        .rev()
+        .take_while(|line| line.trim().starts_with('#'))
+        .copied()
+        .collect();
+    assert!(
+        attributes.iter().any(|line| line.contains("doc(hidden)")),
+        "`pub mod ffi;` in src/lib.rs is not `#[doc(hidden)]`, so the raw pointers and the \
+         eleven `unsafe extern \"C\"` signatures are published API: {attributes:?}"
+    );
+
+    // And the two that are documented on purpose are still documented.
+    for documented in ["pub mod batch;", "pub mod abi;"] {
+        let declaration = root
+            .lines()
+            .position(|line| line.trim() == documented)
+            .unwrap_or_else(|| panic!("src/lib.rs declares `{documented}`"));
+        let hidden = root
+            .lines()
+            .take(declaration)
+            .last()
+            .is_some_and(|line| line.contains("doc(hidden)"));
+        assert!(
+            !hidden,
+            "`{documented}` got hidden. `batch` is safe, standalone and useful on its own, and \
+             `abi` carries the three constants and `check`"
+        );
+    }
+}
+
+#[test]
 fn the_limits_module_carries_no_copy_of_a_documented_default() {
     // A hand-carried 65536 keeps confidently reporting the old bound after the
     // native default moves, and it reports it as though the library agreed.

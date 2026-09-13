@@ -3,8 +3,8 @@
 //!
 //! Callers get Rust types. Neither .NET nor ACadSharp internals reach them,
 //! and neither does a raw pointer, an `ffi` type or an `unsafe` block: the one
-//! place `unsafe` lives outside [`ffi`] is a private module that owns the two
-//! handles and nothing else.
+//! place `unsafe` lives outside the transcription of the C header is a private
+//! module that owns the two handles and nothing else.
 //!
 //! ```rust
 //! use acadsharp_rs::{Decoder, Document, Item, Limits, Primitive};
@@ -138,6 +138,17 @@ mod stream;
 // The raw transcription of `viprs_acadsharp.h`, and the one private module
 // that calls it. These two lines are the whole of the exemption from
 // `deny(unsafe_code)` above.
+//
+// `ffi` is `pub` because this crate's own integration tests compile against it
+// from outside the crate, and `#[doc(hidden)]` because nothing else should.
+// Documenting it would contradict the sentence at the top of this file, since
+// `*mut acadsharp_rs::ffi::viprs_acad_handle` compiles from a consumer crate,
+// and it would freeze eleven `unsafe extern "C"` signatures into a 0.1.0
+// semver promise, which turns the next header revision into a breaking API
+// change. `batch` stays documented because it is safe, standalone and useful
+// on its own, and `abi` because the three constants and `check` are things a
+// consumer legitimately reads.
+#[doc(hidden)]
 #[allow(unsafe_code)]
 pub mod ffi;
 
