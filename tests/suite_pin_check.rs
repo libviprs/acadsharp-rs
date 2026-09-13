@@ -352,16 +352,18 @@ fn the_suite_job_is_wired_the_way_the_rule_needs() {
     );
 
     // A skipped check is the same colour as a passing one, and a job that
-    // swallows its own failure is worse. Neither is allowed in here.
-    assert!(
-        !job.contains("continue-on-error"),
-        "the suite job uses continue-on-error:\n{job}"
-    );
+    // swallows its own failure is worse. Neither is allowed in here. Matched as
+    // YAML keys rather than as substrings, so the job is still free to explain
+    // in a comment or an error message why it has neither of them.
     for line in job.lines() {
-        let t = line.trim_start();
+        let key = line.trim_start().trim_start_matches("- ");
         assert!(
-            !(t.starts_with("if:") || t.starts_with("- if:")),
+            !key.starts_with("if:"),
             "the suite job carries a conditional, which would let it skip:\n{line}"
+        );
+        assert!(
+            !key.starts_with("continue-on-error:"),
+            "the suite job swallows a failure:\n{line}"
         );
     }
 }
