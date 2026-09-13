@@ -9,10 +9,10 @@
 //! `100 * type + k + 0.25`, and `item_handle` is `1000000 + type`. That is what
 //! turns "it parsed" into "it read the right field".
 
-mod common;
+mod wire;
 
 use acadsharp_rs::batch::{BatchReader, Record};
-use common::{doubles_of, handle_of, probe_handle, probe_values, read_capture, type_of};
+use wire::{doubles_of, handle_of, probe_handle, probe_values, read_capture, type_of};
 
 const SYN_1V_12P: &[u8] = include_bytes!("data/syn_1v_12p.bin");
 const SYN_2V_3P: &[u8] = include_bytes!("data/syn_2v_3p.bin");
@@ -49,7 +49,9 @@ fn syn_1v_12p_carries_the_exact_record_sequence_i_verified_by_hand() {
             assert_eq!(v.kind, 0);
             assert_eq!(v.name, "Model");
             assert_eq!(v.item_count, 12);
-            let b = v.bounds().expect("the Model view has a right way round box");
+            let b = v
+                .bounds()
+                .expect("the Model view has a right way round box");
             assert_eq!(
                 [b.min_x, b.min_y, b.max_x, b.max_y],
                 [-100.25, -50.5, 100.75, 50.125]

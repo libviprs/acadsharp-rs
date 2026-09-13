@@ -5,10 +5,10 @@
 //! good batch is self consistent up to the cut. That is why they are written
 //! by hand.
 
-mod common;
+mod wire;
 
 use acadsharp_rs::batch::{BatchError, BatchReader, Reason, Record};
-use common::{Builder, canonical, frame_raw};
+use wire::{Builder, canonical, frame_raw};
 
 /// Parses a batch and hands back the first error, whether it came from the
 /// batch header or from a record.
@@ -242,7 +242,7 @@ fn an_ellipse_of_the_wrong_length_is_refused() {
 #[test]
 fn a_polyline_bulge_count_that_is_neither_zero_nor_the_point_count_is_refused() {
     let batch = Builder::new()
-        .record(common::polyline_raw(
+        .record(wire::polyline_raw(
             1,
             2,
             0,
@@ -258,7 +258,7 @@ fn a_polyline_bulge_count_that_is_neither_zero_nor_the_point_count_is_refused() 
 fn a_polyline_length_that_does_not_match_its_counts_is_refused() {
     // Claims three vertices, carries two.
     let batch = Builder::new()
-        .record(common::polyline_raw(
+        .record(wire::polyline_raw(
             1,
             3,
             0,
@@ -284,14 +284,14 @@ fn a_polyline_too_short_to_hold_its_own_counts_is_refused() {
 /// bytes. Done in `u64` it comes out to 68,719,476,808 and is refused.
 #[test]
 fn a_polyline_point_count_that_wraps_u32_is_refused() {
-    let record = common::polyline_u32_wrap();
+    let record = wire::polyline_u32_wrap();
     assert_eq!(record.len(), 72, "the vector is a 72 byte record");
 
     // The arithmetic, spelled out, so this test says why it is the value it is.
-    let n = u64::from(common::WRAP_POINT_COUNT);
+    let n = u64::from(wire::WRAP_POINT_COUNT);
     assert_eq!(64 + 24 * n, 68_719_476_808, "in u64 it is 68 GB");
     let wrapped = 64u32
-        .wrapping_add(24u32.wrapping_mul(common::WRAP_POINT_COUNT))
+        .wrapping_add(24u32.wrapping_mul(wire::WRAP_POINT_COUNT))
         .wrapping_add(0);
     assert_eq!(wrapped, 72, "in u32 it is exactly the declared length");
 
@@ -301,7 +301,7 @@ fn a_polyline_point_count_that_wraps_u32_is_refused() {
 
 #[test]
 fn a_polygon_with_the_same_defect_is_refused_the_same_way() {
-    let mut record = common::polyline_u32_wrap();
+    let mut record = wire::polyline_u32_wrap();
     record[0..2].copy_from_slice(&9u16.to_le_bytes());
     let batch = Builder::new().record(record).build();
     assert_corrupt(&batch, 12, Reason::PolylineLengthMismatch);
@@ -310,7 +310,7 @@ fn a_polygon_with_the_same_defect_is_refused_the_same_way() {
 #[test]
 fn a_spline_weight_count_that_is_neither_zero_nor_the_control_count_is_refused() {
     let batch = Builder::new()
-        .record(common::spline_raw(
+        .record(wire::spline_raw(
             1,
             3,
             0,
@@ -329,7 +329,7 @@ fn a_spline_weight_count_that_is_neither_zero_nor_the_control_count_is_refused()
 fn a_spline_length_that_does_not_match_its_counts_is_refused() {
     // Claims four knots, carries one.
     let batch = Builder::new()
-        .record(common::spline_raw(
+        .record(wire::spline_raw(
             1,
             3,
             0,
@@ -352,7 +352,7 @@ fn a_spline_control_count_that_wraps_u32_is_refused() {
     let control_count = 178_956_971u32;
     assert_eq!(24u32.wrapping_mul(control_count), 8);
     let batch = Builder::new()
-        .record(common::spline_raw(
+        .record(wire::spline_raw(
             1,
             3,
             0,
@@ -381,7 +381,7 @@ fn a_spline_too_short_to_hold_its_own_counts_is_refused() {
 
 #[test]
 fn a_text_length_that_does_not_match_its_byte_len_is_refused() {
-    let mut record = common::text(1, [1.0, 2.0, 3.0], 4.0, 5.0, "hi");
+    let mut record = wire::text(1, [1.0, 2.0, 3.0], 4.0, 5.0, "hi");
     // byte_len sits at payload offset 56, so record offset 64.
     record[64..68].copy_from_slice(&99u32.to_le_bytes());
     let batch = Builder::new().record(record).build();
@@ -390,7 +390,7 @@ fn a_text_length_that_does_not_match_its_byte_len_is_refused() {
 
 #[test]
 fn a_view_begin_length_that_does_not_match_its_name_len_is_refused() {
-    let mut record = common::view_begin(0, 0, [0.0; 4], 0, "Model");
+    let mut record = wire::view_begin(0, 0, [0.0; 4], 0, "Model");
     // name_len sits at payload offset 48, so record offset 56.
     record[56..60].copy_from_slice(&99u32.to_le_bytes());
     let batch = Builder::new().record(record).build();
@@ -399,7 +399,7 @@ fn a_view_begin_length_that_does_not_match_its_name_len_is_refused() {
 
 #[test]
 fn a_warning_length_that_does_not_match_its_message_len_is_refused() {
-    let mut record = common::warning(100, 0, "hi");
+    let mut record = wire::warning(100, 0, "hi");
     // message_len sits at payload offset 16, so record offset 24.
     record[24..28].copy_from_slice(&99u32.to_le_bytes());
     let batch = Builder::new().record(record).build();
@@ -419,21 +419,21 @@ fn a_string_record_too_short_to_hold_its_own_length_field_is_refused() {
 
 #[test]
 fn invalid_utf8_in_a_text_record_is_refused() {
-    let record = common::text_raw(1, [1.0, 2.0, 3.0], 4.0, 5.0, &[0xFF, 0xFE], 0, 0);
+    let record = wire::text_raw(1, [1.0, 2.0, 3.0], 4.0, 5.0, &[0xFF, 0xFE], 0, 0);
     let batch = Builder::new().record(record).build();
     assert_corrupt(&batch, 12, Reason::InvalidUtf8);
 }
 
 #[test]
 fn invalid_utf8_in_a_view_name_is_refused() {
-    let record = common::view_begin_raw(0, 0, [0.0; 4], 0, &[0x80, 0x80, 0x80], 0, 0);
+    let record = wire::view_begin_raw(0, 0, [0.0; 4], 0, &[0x80, 0x80, 0x80], 0, 0);
     let batch = Builder::new().record(record).build();
     assert_corrupt(&batch, 12, Reason::InvalidUtf8);
 }
 
 #[test]
 fn invalid_utf8_in_a_warning_message_is_refused() {
-    let record = common::warning_raw(100, 0, &[0xC3], 0, 0, 0);
+    let record = wire::warning_raw(100, 0, &[0xC3], 0, 0, 0);
     let batch = Builder::new().record(record).build();
     assert_corrupt(&batch, 12, Reason::InvalidUtf8);
 }
@@ -443,14 +443,14 @@ fn a_truncated_multibyte_character_is_refused() {
     // The lead byte of A-umlaut with its continuation byte cut off, which is
     // what a producer that cut a string at a byte rather than a character
     // boundary would send.
-    let record = common::text_raw(1, [1.0, 2.0, 3.0], 4.0, 5.0, b"ab\xc3", 0, 0);
+    let record = wire::text_raw(1, [1.0, 2.0, 3.0], 4.0, 5.0, b"ab\xc3", 0, 0);
     let batch = Builder::new().record(record).build();
     assert_corrupt(&batch, 12, Reason::InvalidUtf8);
 }
 
 #[test]
 fn a_warning_code_of_zero_is_refused() {
-    let record = common::warning(0, 0, "zero is not a warning code");
+    let record = wire::warning(0, 0, "zero is not a warning code");
     let batch = Builder::new().record(record).build();
     assert_corrupt(&batch, 12, Reason::ZeroWarningCode);
 }
@@ -461,28 +461,28 @@ fn a_warning_code_of_zero_is_refused() {
 
 #[test]
 fn a_nan_coordinate_in_a_line_is_refused() {
-    let record = common::line(1, [0.0, 1.0, 2.0, f64::NAN, 4.0, 5.0]);
+    let record = wire::line(1, [0.0, 1.0, 2.0, f64::NAN, 4.0, 5.0]);
     let batch = Builder::new().record(record).build();
     assert_corrupt(&batch, 12, Reason::NonFiniteFloat);
 }
 
 #[test]
 fn an_infinite_radius_in_an_arc_is_refused() {
-    let record = common::arc(1, [0.0, 0.0, 0.0], f64::INFINITY, 0.0, 1.0, [0.0, 0.0, 1.0]);
+    let record = wire::arc(1, [0.0, 0.0, 0.0], f64::INFINITY, 0.0, 1.0, [0.0, 0.0, 1.0]);
     let batch = Builder::new().record(record).build();
     assert_corrupt(&batch, 12, Reason::NonFiniteFloat);
 }
 
 #[test]
 fn a_negative_infinity_in_a_circle_is_refused() {
-    let record = common::circle(1, [0.0, 0.0, f64::NEG_INFINITY], 1.0, [0.0, 0.0, 1.0]);
+    let record = wire::circle(1, [0.0, 0.0, f64::NEG_INFINITY], 1.0, [0.0, 0.0, 1.0]);
     let batch = Builder::new().record(record).build();
     assert_corrupt(&batch, 12, Reason::NonFiniteFloat);
 }
 
 #[test]
 fn a_nan_in_an_ellipse_parameter_is_refused() {
-    let record = common::ellipse(
+    let record = wire::ellipse(
         1,
         [0.0, 0.0, 0.0],
         [1.0, 0.0, 0.0],
@@ -496,7 +496,7 @@ fn a_nan_in_an_ellipse_parameter_is_refused() {
 
 #[test]
 fn a_nan_in_a_polyline_normal_is_refused() {
-    let record = common::polyline(1, false, [0.0, 0.0, f64::NAN], &[[1.0, 2.0, 3.0]], &[]);
+    let record = wire::polyline(1, false, [0.0, 0.0, f64::NAN], &[[1.0, 2.0, 3.0]], &[]);
     let batch = Builder::new().record(record).build();
     assert_corrupt(&batch, 12, Reason::NonFiniteFloat);
 }
@@ -505,7 +505,7 @@ fn a_nan_in_a_polyline_normal_is_refused() {
 fn a_nan_bulge_is_refused() {
     // The bulges sit past every vertex, so this one only fails if the check
     // covers the whole trailing array rather than the fixed prefix.
-    let record = common::polyline(
+    let record = wire::polyline(
         1,
         false,
         [0.0, 0.0, 1.0],
@@ -518,7 +518,7 @@ fn a_nan_bulge_is_refused() {
 
 #[test]
 fn an_infinite_spline_weight_is_refused() {
-    let record = common::spline(
+    let record = wire::spline(
         1,
         1,
         0,
@@ -532,7 +532,7 @@ fn an_infinite_spline_weight_is_refused() {
 
 #[test]
 fn a_nan_in_a_text_height_is_refused() {
-    let record = common::text(1, [1.0, 2.0, 3.0], f64::NAN, 5.0, "hi");
+    let record = wire::text(1, [1.0, 2.0, 3.0], f64::NAN, 5.0, "hi");
     let batch = Builder::new().record(record).build();
     assert_corrupt(&batch, 12, Reason::NonFiniteFloat);
 }
@@ -548,7 +548,7 @@ fn the_finiteness_scan_stops_before_a_text_string() {
     // two answers really are distinguishable here.
     let mut bytes = f64::NAN.to_le_bytes().to_vec();
     bytes.extend_from_slice(&f64::INFINITY.to_le_bytes());
-    let record = common::text_raw(1, [1.0, 2.0, 3.0], 4.0, 5.0, &bytes, 0, 0);
+    let record = wire::text_raw(1, [1.0, 2.0, 3.0], 4.0, 5.0, &bytes, 0, 0);
     let batch = Builder::new().record(record).build();
     assert_corrupt(&batch, 12, Reason::InvalidUtf8);
 }
@@ -556,7 +556,7 @@ fn the_finiteness_scan_stops_before_a_text_string() {
 #[test]
 fn a_long_valid_utf8_text_round_trips_past_the_scan_boundary() {
     let long = "\u{c4}".repeat(64);
-    let record = common::text(1, [1.0, 2.0, 3.0], 4.0, 5.0, &long);
+    let record = wire::text(1, [1.0, 2.0, 3.0], 4.0, 5.0, &long);
     let batch = Builder::new().record(record).build();
     let reader = BatchReader::new(&batch).expect("parses");
     match reader.records().next().expect("one record") {

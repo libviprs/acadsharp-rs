@@ -5,10 +5,10 @@
 //! under strictness, so the second half of this file is as load bearing as the
 //! first.
 
-mod common;
+mod wire;
 
 use acadsharp_rs::batch::{BatchReader, Record};
-use common::{
+use wire::{
     Builder, CANONICAL_TYPES, canonical, doubles_of, handle_of, probe_handle, probe_value,
     probe_values, type_of,
 };
@@ -245,7 +245,7 @@ fn view_end_and_document_end_fields_round_trip() {
 
 #[test]
 fn a_polyline_with_no_bulges_round_trips() {
-    let record = common::polyline(
+    let record = wire::polyline(
         1,
         true,
         [0.0, 0.0, 1.0],
@@ -266,7 +266,7 @@ fn a_polyline_with_no_bulges_round_trips() {
 
 #[test]
 fn a_spline_with_no_weights_round_trips() {
-    let record = common::spline(1, 2, 5, &[0.0, 1.0, 2.0], &[[1.0, 2.0, 3.0]], &[]);
+    let record = wire::spline(1, 2, 5, &[0.0, 1.0, 2.0], &[[1.0, 2.0, 3.0]], &[]);
     match read_one(&Builder::new().record(record).build()) {
         Record::Spline(s) => {
             assert_eq!(s.degree, 2);
@@ -332,9 +332,9 @@ fn batch_flags_above_bit_zero_are_ignored_not_refused() {
 #[test]
 fn payload_reserved_fields_are_not_refused() {
     // reserved1 in a Text, reserved0 in a ViewBegin, both non zero.
-    let dirty_text = common::text_raw(1, [1.0, 2.0, 3.0], 4.0, 5.0, b"hi", 0xDEAD_BEEF, 0);
-    let dirty_view = common::view_begin_raw(0, 0, [0.0; 4], 1, b"Model", 0xFFFF_FFFF, 0);
-    let dirty_warning = common::warning_raw(7, 1, b"x", 0x1234, 0x5678, 0);
+    let dirty_text = wire::text_raw(1, [1.0, 2.0, 3.0], 4.0, 5.0, b"hi", 0xDEAD_BEEF, 0);
+    let dirty_view = wire::view_begin_raw(0, 0, [0.0; 4], 1, b"Model", 0xFFFF_FFFF, 0);
+    let dirty_warning = wire::warning_raw(7, 1, b"x", 0x1234, 0x5678, 0);
     let batch = Builder::new()
         .records(&[dirty_text, dirty_view, dirty_warning])
         .build();
@@ -348,9 +348,9 @@ fn payload_reserved_fields_are_not_refused() {
 
 #[test]
 fn non_zero_string_padding_is_not_refused() {
-    let text = common::text_raw(1, [1.0, 2.0, 3.0], 4.0, 5.0, b"hi", 0, 0xAA);
-    let view = common::view_begin_raw(0, 0, [0.0; 4], 1, b"Model", 0, 0xBB);
-    let warning = common::warning_raw(7, 1, b"x", 0, 0, 0xCC);
+    let text = wire::text_raw(1, [1.0, 2.0, 3.0], 4.0, 5.0, b"hi", 0, 0xAA);
+    let view = wire::view_begin_raw(0, 0, [0.0; 4], 1, b"Model", 0, 0xBB);
+    let warning = wire::warning_raw(7, 1, b"x", 0, 0, 0xCC);
     let batch = Builder::new().records(&[text, view, warning]).build();
     let reader = BatchReader::new(&batch).expect("parses");
     let records: Vec<_> = reader.records().map(|r| r.expect("parses")).collect();
@@ -367,7 +367,7 @@ fn non_zero_string_padding_is_not_refused() {
 #[test]
 fn an_unknown_record_type_is_skipped_and_the_next_record_is_read() {
     let batch = Builder::new()
-        .records(&[canonical(3), common::forward_probe(), canonical(5)])
+        .records(&[canonical(3), wire::forward_probe(), canonical(5)])
         .build();
     let reader = BatchReader::new(&batch).expect("parses");
     let records: Vec<_> = reader.records().map(|r| r.expect("parses")).collect();
@@ -390,7 +390,7 @@ fn an_unknown_record_type_is_skipped_and_the_next_record_is_read() {
 #[test]
 fn an_unknown_warning_code_is_not_refused() {
     let batch = Builder::new()
-        .record(common::warning(4_294_967_295, 0, "from some later backend"))
+        .record(wire::warning(4_294_967_295, 0, "from some later backend"))
         .build();
     match read_one(&batch) {
         Record::Warning(w) => assert_eq!(w.code, u32::MAX),
@@ -403,7 +403,7 @@ fn a_spline_whose_degree_disagrees_with_its_knot_count_is_accepted() {
     // A NURBS usually has knots == controls + degree + 1. The wire does not
     // promise it and the refusal list does not mention it, so I read it out
     // and leave the judgement to whoever knows what the curve is for.
-    let record = common::spline(1, 9, 0, &[0.0, 1.0], &[[1.0, 2.0, 3.0]], &[]);
+    let record = wire::spline(1, 9, 0, &[0.0, 1.0], &[[1.0, 2.0, 3.0]], &[]);
     match read_one(&Builder::new().record(record).build()) {
         Record::Spline(s) => {
             assert_eq!(s.degree, 9);
@@ -416,7 +416,7 @@ fn a_spline_whose_degree_disagrees_with_its_knot_count_is_accepted() {
 
 #[test]
 fn inverted_extents_read_as_no_bounds() {
-    let record = common::view_begin(0, 2, [1e20, 1e20, -1e20, -1e20], 0, "Empty");
+    let record = wire::view_begin(0, 2, [1e20, 1e20, -1e20, -1e20], 0, "Empty");
     match read_one(&Builder::new().record(record).build()) {
         Record::ViewBegin(v) => {
             assert!(
@@ -434,7 +434,7 @@ fn inverted_extents_read_as_no_bounds() {
 fn a_non_finite_extent_is_not_refused() {
     // The finiteness rule is scoped to geometry. A ViewBegin is exempt, so
     // these bytes have to come back out rather than end the batch.
-    let record = common::view_begin(0, 0, [f64::NAN, 0.0, f64::INFINITY, 1.0], 0, "Odd");
+    let record = wire::view_begin(0, 0, [f64::NAN, 0.0, f64::INFINITY, 1.0], 0, "Odd");
     match read_one(&Builder::new().record(record).build()) {
         Record::ViewBegin(v) => assert!(v.extents[0].is_nan()),
         other => panic!("expected a ViewBegin, got {other:?}"),
@@ -454,7 +454,7 @@ fn a_non_finite_extent_has_no_usable_bounds() {
         [f64::NAN, f64::NAN, f64::NAN, f64::NAN],
         [f64::NEG_INFINITY, 0.0, f64::INFINITY, 10.0],
     ] {
-        let record = common::view_begin(0, 0, extents, 0, "Odd");
+        let record = wire::view_begin(0, 0, extents, 0, "Odd");
         match read_one(&Builder::new().record(record).build()) {
             Record::ViewBegin(v) => {
                 // The bytes still cross verbatim. That part was always right.
@@ -478,10 +478,12 @@ fn a_non_finite_extent_has_no_usable_bounds() {
 fn a_finite_right_way_round_box_still_has_bounds() {
     // The positive control. A rule that answered `None` to everything would
     // satisfy the test above and break every real view.
-    let record = common::view_begin(0, 0, [-1.0, -2.0, 3.0, 4.0], 0, "Real");
+    let record = wire::view_begin(0, 0, [-1.0, -2.0, 3.0, 4.0], 0, "Real");
     match read_one(&Builder::new().record(record).build()) {
         Record::ViewBegin(v) => {
-            let b = v.bounds().expect("a finite box the right way round is usable");
+            let b = v
+                .bounds()
+                .expect("a finite box the right way round is usable");
             assert_eq!(b.min_x, -1.0);
             assert_eq!(b.min_y, -2.0);
             assert_eq!(b.max_x, 3.0);
@@ -496,7 +498,7 @@ fn an_upside_down_box_has_no_bounds_either() {
     // min_x <= max_x is only half the box. A y range the wrong way round is
     // the same kind of not-a-rectangle, and the inverted box the producer
     // writes gets both wrong at once.
-    let record = common::view_begin(0, 0, [0.0, 10.0, 10.0, -10.0], 0, "Flipped");
+    let record = wire::view_begin(0, 0, [0.0, 10.0, 10.0, -10.0], 0, "Flipped");
     match read_one(&Builder::new().record(record).build()) {
         Record::ViewBegin(v) => assert!(
             v.bounds().is_none(),
@@ -511,7 +513,7 @@ fn an_upside_down_box_has_no_bounds_either() {
 fn the_iteration_budget_allows_every_minimum_sized_record() {
     // `payload_length / 8 + 1` is exactly enough for a batch of nothing but
     // eight byte records. A budget one short would refuse this legal batch.
-    let smallest = common::frame(32512, &[]);
+    let smallest = wire::frame(32512, &[]);
     assert_eq!(smallest.len(), 8);
     let count = 512;
     let mut builder = Builder::new();
@@ -535,7 +537,7 @@ fn the_iteration_budget_allows_every_minimum_sized_record() {
 fn the_expanded_insert_flag_is_read_off_prologue_bit_zero() {
     // Bit 0 means the record came from expanding a nested insertion. Every
     // other bit is carried verbatim rather than masked off.
-    let record = common::line_flagged(7, 0xFFFF_FFFF, [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+    let record = wire::line_flagged(7, 0xFFFF_FFFF, [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
     match read_one(&Builder::new().record(record).build()) {
         Record::Line(l) => {
             assert!(l.prologue.from_expanded_insert());
@@ -544,7 +546,7 @@ fn the_expanded_insert_flag_is_read_off_prologue_bit_zero() {
         }
         other => panic!("expected a Line, got {other:?}"),
     }
-    let plain = common::line_flagged(7, 0xFFFF_FFFE, [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+    let plain = wire::line_flagged(7, 0xFFFF_FFFE, [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
     match read_one(&Builder::new().record(plain).build()) {
         Record::Line(l) => assert!(!l.prologue.from_expanded_insert()),
         other => panic!("expected a Line, got {other:?}"),

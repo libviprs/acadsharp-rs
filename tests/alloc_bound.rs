@@ -10,7 +10,7 @@
 //! counter is armed. A second test thread allocating in the measurement window
 //! would make the number mean nothing.
 
-mod common;
+mod wire;
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -106,8 +106,8 @@ const BUDGET: usize = 1024;
 fn main() {
     // Everything is built before the counter is armed, so the measurement sees
     // the parse and nothing else.
-    let wrap = common::Builder::new()
-        .record(common::polyline_u32_wrap())
+    let wrap = wire::Builder::new()
+        .record(wire::polyline_u32_wrap())
         .build();
     let golden: &[u8] = include_bytes!("data/syn_1v_12p.bin");
     let big: &[u8] = include_bytes!("data/syn_3v_40p.bin");

@@ -7,7 +7,7 @@
 //! ends in either a clean stop or a length that runs past what is left. The
 //! hand written vectors in `malformed.rs` are what cover the rest.
 
-mod common;
+mod wire;
 
 use acadsharp_rs::batch::BatchReader;
 
