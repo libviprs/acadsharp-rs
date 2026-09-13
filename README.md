@@ -37,6 +37,11 @@ archive and point `ACADSHARP_NATIVE_DIR` at the directory holding `lib/` and
 `metadata/LINKINFO.json`. Without that the crate still builds, checks and
 documents, and everything that reaches the library is compiled out.
 
+If you are building a **binary** on top of this crate rather than a library,
+read [What a binary that depends on this crate has to do](#what-a-binary-that-depends-on-this-crate-has-to-do)
+before you run it: the default shared link leaves the loader with nothing to
+find and the failure arrives at startup rather than at link time.
+
 ### Where an archive is looked for
 
 Two places, in order, and nowhere else. The build script never downloads
@@ -55,15 +60,71 @@ already live in `.github/actions/fetch-native-archive`.
 
 ### Shared or static
 
-`link-shared` and `link-static` are Cargo features, both off by default, and
-the default is the shared link.
+`link-static` is a Cargo feature, off by default, and off means the shared link.
+
+There is only one feature on purpose. Cargo features are additive: any crate in
+a graph may turn one on and none of them can turn another's off. A `link-shared`
+beside this one existed briefly, and a graph with one dependency asking for each
+unified both on and stopped the build with advice neither author could act on.
+With no feature the plan is already the shared one, so the second feature
+carried that hazard and bought nothing.
 
 `link-static` needs an archive whose `metadata/LINKINFO.json` says
 `static_certified: true`, which is a measurement rather than an intention: it
 is true only where the producer linked the static archive into a probe program
 and ran it on that target. Asking for it anywhere else is a refusal naming the
-target. Turning both features on is a refusal too, but only once an archive has
-resolved, so `cargo doc --all-features` without one stays green.
+target. `link-static` picks nothing until an archive has resolved, so
+`cargo doc --all-features` without one stays green.
+
+### What a binary that depends on this crate has to do
+
+**Static is the mode to deploy in and shared is the mode to develop in.** A
+static link puts the library inside the binary and that binary runs anywhere.
+The shared link does not, and the reason is worth stating plainly rather than
+being discovered.
+
+This crate's build script emits the rpath that finds `libacadsharp_native.so`
+as `cargo::rustc-link-arg`, and cargo binds that to the emitting package's own
+binaries, tests and examples. It goes no further. So this crate's own tests
+link and run, and a binary that depends on this crate links, and then dies
+before `main`:
+
+```
+error while loading shared libraries: libacadsharp_native.so: cannot open
+shared object file: No such file or directory
+```
+
+with exit code 127. Three ways out, and the first is the one to reach for:
+
+1. **A `build.rs` of your own, emitting your own rpath.** This crate declares
+   `links = "acadsharp_native"`, so cargo hands your build script the archive's
+   location:
+
+   ```rust
+   // build.rs in the crate that produces the binary
+   fn main() {
+       if let Ok(dir) = std::env::var("DEP_ACADSHARP_NATIVE_LIB_DIR") {
+           println!("cargo::rustc-link-arg=-Wl,-rpath,{dir}");
+       }
+   }
+   ```
+
+   The four variables are `DEP_ACADSHARP_NATIVE_LIB_DIR` (the archive's `lib/`),
+   `DEP_ACADSHARP_NATIVE_NATIVE_DIR` (the archive root),
+   `DEP_ACADSHARP_NATIVE_LINK_KIND` (`shared` or `static`) and
+   `DEP_ACADSHARP_NATIVE_ARTIFACT_VERSION`. They are only set when an archive
+   actually resolved, so read them with a `Result` and carry on without them.
+   Note that this pins the build machine's path into the binary, which is
+   exactly what you want for a developer build and exactly what you do not want
+   for one you ship.
+
+2. **`link-static`.** No loader involved, nothing to find at run time, and the
+   binary is self-contained. This is the answer for anything that leaves the
+   machine that built it.
+
+3. **`LD_LIBRARY_PATH`** pointing at the archive's `lib/`, set wherever the
+   binary runs. The quickest thing to type and the easiest to forget on the
+   machine that matters.
 
 ## Boundary
 

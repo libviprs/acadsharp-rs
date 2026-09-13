@@ -107,22 +107,10 @@ fn uncertified() -> LinkInfo {
     .expect("the fixture is a manifest")
 }
 
-const NOTHING: Features = Features {
-    link_static: false,
-    link_shared: false,
-};
-const STATIC: Features = Features {
-    link_static: true,
-    link_shared: false,
-};
-const SHARED: Features = Features {
-    link_static: false,
-    link_shared: true,
-};
-const BOTH: Features = Features {
-    link_static: true,
-    link_shared: true,
-};
+/// No feature, which is the default and which is the shared link.
+const NOTHING: Features = Features { link_static: false };
+/// The one feature there is.
+const STATIC: Features = Features { link_static: true };
 
 fn choose(
     info: &LinkInfo,
@@ -190,7 +178,7 @@ fn the_static_plan_carries_no_rpath() {
 #[test]
 fn the_shared_recipe_is_emitted_exactly_and_keeps_its_rpath() {
     let info = certified();
-    let plan = plan(&info, SHARED, "aarch64-unknown-linux-gnu");
+    let plan = plan(&info, NOTHING, "aarch64-unknown-linux-gnu");
     assert_eq!(plan.kind, LinkKind::Shared);
     assert_eq!(
         plan.directives(),
@@ -213,7 +201,7 @@ fn the_shared_recipe_reads_the_shared_list_and_the_static_one_reads_the_static_l
     // that reads the wrong one gets undefined symbols at the end of a static
     // link with nothing pointing at why.
     let info = certified();
-    let shared = plan(&info, SHARED, "aarch64-unknown-linux-gnu");
+    let shared = plan(&info, NOTHING, "aarch64-unknown-linux-gnu");
     let statik = plan(&info, STATIC, "aarch64-unknown-linux-gnu");
     assert!(
         shared
@@ -255,9 +243,9 @@ fn the_uncertified_archive_links_the_dylib_it_ships() {
 
 #[test]
 fn neither_feature_means_shared_even_on_a_certified_archive() {
-    // Both features default off and the default is the shared link, so the
-    // three CI jobs that never fetch an archive and the one that does all get
-    // the same shape. Static is something a consumer asks for.
+    // The feature defaults off and off is the shared link, so the three CI
+    // jobs that never fetch an archive and the one that does all get the same
+    // shape. Static is something a consumer asks for.
     let info = certified();
     assert_eq!(
         plan(&info, NOTHING, "aarch64-unknown-linux-gnu").kind,
@@ -295,26 +283,6 @@ fn link_static_on_an_uncertified_target_is_refused_and_names_the_target() {
     assert!(
         shown.contains("aarch64-apple-darwin"),
         "the refusal has to name the target that has no certified static half, and it said: {shown}"
-    );
-}
-
-#[test]
-fn both_link_features_at_once_is_a_refusal() {
-    let info = certified();
-    let error = refused(
-        &info,
-        BOTH,
-        "aarch64-unknown-linux-gnu",
-        "both link features",
-    );
-    assert!(
-        matches!(error, PolicyError::FeatureConflict { .. }),
-        "it said: {error}"
-    );
-    let shown = error.to_string();
-    assert!(
-        shown.contains("link-static") && shown.contains("link-shared"),
-        "the refusal has to name both features, and it said: {shown}"
     );
 }
 
@@ -595,20 +563,30 @@ fn there_is_no_link_shared_feature_anywhere() {
     // already the shared one, so `link-shared` carried the hazard and bought
     // nothing, and it is gone. This is free to delete now and breaking after
     // publication, which is why it happened now.
+    // Matched on what re-introducing it would actually look like rather than
+    // on the name, because the name is still in the prose on purpose: a
+    // feature that vanished without a sentence saying why comes back.
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("it is committed");
     assert!(
-        !manifest.contains("link-shared"),
-        "Cargo.toml still declares a link-shared feature, and two features that pick between two \
-         answers cannot both be on in a dependency graph that unified them"
+        !manifest
+            .lines()
+            .any(|l| l.trim_start().starts_with("link-shared")),
+        "Cargo.toml declares a link-shared feature again, and a pair of features that pick \
+         between two answers cannot both be on in a graph that unified them"
     );
-    for file in ["build.rs", "README.md", "src/lib.rs"] {
+    for file in ["build.rs", "build/policy.rs"] {
         let text = std::fs::read_to_string(root.join(file)).expect("it is committed");
         assert!(
-            !text.contains("link-shared") && !text.contains("LINK_SHARED"),
-            "{file} still names the link-shared feature"
+            !text.contains("CARGO_FEATURE_LINK_SHARED"),
+            "{file} reads CARGO_FEATURE_LINK_SHARED, so the feature is back"
         );
     }
+    let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("committed");
+    assert!(
+        !ci.contains("--features link-shared"),
+        "a CI cell asks for the link-shared feature, so something declares it"
+    );
 }
 
 #[test]

@@ -16,8 +16,8 @@
 //!
 //! The crate has to build with no archive at all, because `Check & Lint`,
 //! `MSRV` and `Docs` never link one. So a missing archive is a warning and an
-//! absent `cfg`, never an error, and the two link features exist but pick
-//! nothing until there is an archive to pick between.
+//! absent `cfg`, never an error, and `link-static` picks nothing until there is
+//! an archive to pick from.
 
 #[path = "build/header.rs"]
 mod header;
@@ -198,7 +198,6 @@ fn resolve_and_link(expected: policy::Expectations) {
     // to build the whole crate again for each one.
     let features = policy::Features {
         link_static: std::env::var_os("CARGO_FEATURE_LINK_STATIC").is_some(),
-        link_shared: std::env::var_os("CARGO_FEATURE_LINK_SHARED").is_some(),
     };
 
     let Some(root) = resolve_root(&target) else {

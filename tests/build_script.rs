@@ -165,7 +165,6 @@ struct Run {
     native_dir: Option<PathBuf>,
     cargo_home: Option<PathBuf>,
     link_static: bool,
-    link_shared: bool,
     require_native: bool,
 }
 
@@ -180,7 +179,6 @@ impl Run {
             native_dir: None,
             cargo_home: Some(home),
             link_static: false,
-            link_shared: false,
             require_native: false,
         }
     }
@@ -197,11 +195,6 @@ impl Run {
 
     fn link_static(mut self) -> Self {
         self.link_static = true;
-        self
-    }
-
-    fn link_shared(mut self) -> Self {
-        self.link_shared = true;
         self
     }
 
@@ -237,9 +230,6 @@ impl Run {
         }
         if self.link_static {
             env.insert("CARGO_FEATURE_LINK_STATIC", "1".into());
-        }
-        if self.link_shared {
-            env.insert("CARGO_FEATURE_LINK_SHARED", "1".into());
         }
         if self.require_native {
             env.insert("ACADSHARP_REQUIRE_NATIVE", "1".into());
@@ -394,35 +384,14 @@ fn link_static_against_the_uncertified_mac_archive_stops_the_build() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn both_features_with_an_archive_present_stops_the_build() {
-    let dir = scratch("both-with-archive");
-    let root = unpack(&dir, &fixture("aarch64-unknown-linux-gnu"));
-    let run = Run::new(&dir)
-        .archive(&root)
-        .link_static()
-        .link_shared()
-        .go(&dir);
-
-    assert!(
-        !run.ok,
-        "this is supposed to stop the build: {}",
-        run.everything()
-    );
-    assert!(
-        run.stderr.contains("link-static") && run.stderr.contains("link-shared"),
-        "the refusal has to name both features: {}",
-        run.everything()
-    );
-}
-
-#[test]
-fn both_features_with_no_archive_is_green() {
+fn every_feature_at_once_with_no_archive_is_green() {
     // This is what `cargo doc --all-features` does in the `Docs` job, which
-    // never fetches an archive. The conflict is a real refusal, and it is
-    // raised only once there is an archive to link either way, so turning
-    // every feature on to render the documentation cannot fail.
-    let dir = scratch("both-no-archive");
-    let run = Run::new(&dir).link_static().link_shared().go(&dir);
+    // never fetches an archive. `link-static` picks nothing until there is an
+    // archive to pick from, so turning every feature on to render the
+    // documentation cannot fail. It stays a real case even with one feature
+    // left, because `--all-features` is what docs.rs runs.
+    let dir = scratch("all-features-no-archive");
+    let run = Run::new(&dir).link_static().go(&dir);
 
     assert!(
         run.ok,

@@ -36,11 +36,55 @@
 //! which is what [`abi::handshake`] being the one gated function in here is
 //! about. [`batch`] never links: it reads bytes.
 //!
-//! The `link-shared` and `link-static` features pick which way. Both are off by
-//! default and the default is the shared link. `link-static` needs an archive
-//! whose manifest says `static_certified: true`, which is true only where the
-//! producer linked the static archive into a probe program and ran it on that
-//! target, and asking for it anywhere else is a refusal naming the target.
+//! The `link-static` feature picks the other way. It is off by default and off
+//! is the shared link. It needs an archive whose manifest says
+//! `static_certified: true`, which is true only where the producer linked the
+//! static archive into a probe program and ran it on that target, and asking
+//! for it anywhere else is a refusal naming the target.
+//!
+//! There is one feature rather than a pair, because cargo features are
+//! additive: any crate in a graph may turn one on and none can turn another's
+//! off. A `link-shared` beside it would make a graph where one dependency asks
+//! for each into a build that stops with advice neither author can act on.
+//!
+//! ## A binary that depends on this crate needs one more thing
+//!
+//! **Static is the mode to deploy in and shared is the mode to develop in.**
+//!
+//! The rpath that finds `libacadsharp_native.so` goes out as
+//! `cargo::rustc-link-arg`, and cargo binds that to the emitting package's own
+//! binaries, tests and examples. It goes no further. So this crate's tests run,
+//! and a binary that depends on this crate links and then dies before `main`
+//! with `error while loading shared libraries: libacadsharp_native.so` and exit
+//! code 127.
+//!
+//! Three ways out, best first:
+//!
+//! 1. A `build.rs` in the crate that produces the binary, emitting its own
+//!    rpath. This crate declares `links = "acadsharp_native"`, so cargo hands a
+//!    downstream build script `DEP_ACADSHARP_NATIVE_LIB_DIR` (the archive's
+//!    `lib/`), `DEP_ACADSHARP_NATIVE_NATIVE_DIR` (its root),
+//!    `DEP_ACADSHARP_NATIVE_LINK_KIND` and
+//!    `DEP_ACADSHARP_NATIVE_ARTIFACT_VERSION`:
+//!
+//!    ```no_run
+//!    // build.rs, in the crate that produces the binary
+//!    fn main() {
+//!        if let Ok(dir) = std::env::var("DEP_ACADSHARP_NATIVE_LIB_DIR") {
+//!            println!("cargo::rustc-link-arg=-Wl,-rpath,{dir}");
+//!        }
+//!    }
+//!    ```
+//!
+//!    They are set only when an archive resolved, so read them as a `Result`
+//!    and carry on without them. This bakes the build machine's path into the
+//!    binary, which is right for a developer build and wrong for a shipped one.
+//! 2. `link-static`, which puts the library inside the binary and leaves the
+//!    loader nothing to do. This is the answer for anything that leaves the
+//!    machine that built it.
+//! 3. `LD_LIBRARY_PATH` pointing at the archive's `lib/`, set wherever the
+//!    binary runs. Quickest to type, easiest to forget on the machine that
+//!    matters.
 //!
 //! [`libviprs-dep`]: https://github.com/libviprs/libviprs-dep
 #![forbid(unsafe_op_in_unsafe_fn)]

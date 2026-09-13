@@ -87,13 +87,7 @@ jobs:
       # One cell per feature, because feature-gated code is invisible to the
       # default pass and in the core repo that hole hid a real `collapsible_if`
       # for months (libviprs#816). `tests/static_link.rs` only exists under
-      # `link-static`, so without the second cell nothing lints it.
-      #
-      # Deliberately not `--all-features`. With an archive present that
-      # combination is the refusal the build script exists to raise, and this
-      # job has no archive, so an `--all-features` cell here would be a cell
-      # that passes for the wrong reason.
-      - run: cargo clippy --all-targets --features link-shared -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      # `link-static`, so without this cell nothing lints it.
       - run: cargo clippy --all-targets --features link-static -- -D warnings -W clippy::incompatible_msrv -W deprecated
 
   msrv:

@@ -26,20 +26,22 @@ deprecated = "deny"
 incompatible_msrv = "warn"
 
 [features]
-# Which way the native library gets linked. Both off by default, and the
-# default is the shared link.
+# Which way the native library gets linked. One feature, off by default, and
+# off means the shared link.
 #
-# They are deliberately not mutually exclusive at check time. The conflict is
-# raised by the build script only once an archive has actually resolved, so
-# `cargo doc --all-features` with no archive (which is what the `Docs` job and
-# docs.rs both do) stays green rather than failing on a combination that picks
-# between two things neither of which is there.
+# There is deliberately only one. Cargo features are additive: any crate in a
+# graph may turn one on and none of them can turn another's off. A `link-shared`
+# beside this used to exist, and a graph with one dependency asking for each
+# unified both on and panicked in this crate's build script with advice neither
+# author could act on. With no feature at all the plan is already the shared
+# one, so the second feature carried that hazard and bought nothing.
 #
 # `link-static` needs an archive whose manifest says `static_certified: true`,
 # which is a measurement: true only where the producer linked the static
-# archive into a probe program and ran it on that target.
+# archive into a probe program and ran it on that target. It is also the mode
+# to deploy in: a shared link leaves every downstream binary needing an rpath,
+# an LD_LIBRARY_PATH or a build script of its own.
 link-static = []
-link-shared = []
 
 [dependencies]
 

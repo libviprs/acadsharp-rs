@@ -62,15 +62,20 @@ impl Archive {
     }
 }
 
-/// The two link features, read from `CARGO_FEATURE_*` rather than through
-/// `cfg!`.
+/// The link feature, read from `CARGO_FEATURE_*` rather than through `cfg!`.
 ///
 /// A build script compiled with a feature and one told about it at run time
 /// behave the same way, and the second kind can be driven from a test.
+///
+/// There is one field because there is one feature. Cargo features are
+/// additive, so a pair that picks between two answers is a pair that can both
+/// be on in a graph that unified them, and the only thing this build script
+/// could do about it was panic at two authors who each asked for one thing.
+/// Absent means the shared link, which is what the absent feature already
+/// meant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Features {
     pub link_static: bool,
-    pub link_shared: bool,
 }
 
 /// What the vendored header declares, which an archive has to agree with.
@@ -148,8 +153,6 @@ impl LinkPlan {
 /// Every way the choice can fail to be one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyError {
-    /// Both link features at once.
-    FeatureConflict { manifest: String },
     /// The archive is for another target triple.
     TargetMismatch {
         manifest: String,
@@ -194,12 +197,6 @@ pub enum PolicyError {
 impl fmt::Display for PolicyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::FeatureConflict { manifest } => write!(
-                f,
-                "the `link-static` and `link-shared` features are both on, and they pick between \
-                 two different ways of linking {manifest}, so there is no answer to give. Turn \
-                 one off. Both are off by default and the default is the shared link."
-            ),
             Self::TargetMismatch {
                 manifest,
                 archive_target,
@@ -284,10 +281,8 @@ impl fmt::Display for PolicyError {
 
 /// Picks a link mode and builds the exact directive list for it.
 ///
-/// The order of the checks is deliberate. The feature conflict comes first
-/// because it is about the caller rather than the archive, then the archive is
-/// checked for being the right archive at all, and only then does the mode get
-/// picked.
+/// The order of the checks is deliberate: the archive is checked for being the
+/// right archive at all, and only then does the mode get picked.
 pub fn choose(
     info: &LinkInfo,
     features: Features,
@@ -296,10 +291,6 @@ pub fn choose(
     archive: &Archive,
 ) -> Result<LinkPlan, PolicyError> {
     let at = archive.manifest.display().to_string();
-
-    if features.link_static && features.link_shared {
-        return Err(PolicyError::FeatureConflict { manifest: at });
-    }
 
     if info.target != target {
         return Err(PolicyError::TargetMismatch {
@@ -363,9 +354,9 @@ pub fn choose(
         });
     }
 
-    // Static only when it was asked for. Both features are off by default and
-    // the default is the shared link, so the three CI jobs that never fetch an
-    // archive and the one that does agree about what they are building.
+    // Static only when it was asked for. The feature is off by default and off
+    // is the shared link, so the three CI jobs that never fetch an archive and
+    // the one that does agree about what they are building.
     if features.link_static {
         let Some(statics) = &info.statics else {
             return Err(PolicyError::StaticNotCertified {
