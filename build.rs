@@ -250,14 +250,26 @@ fn resolve_and_link(expected: policy::Expectations) {
 /// `ACADSHARP_NATIVE_DIR`, then the cache, and nowhere else.
 fn resolve_root(target: &str) -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("ACADSHARP_NATIVE_DIR") {
-        let root = PathBuf::from(&dir);
+        let raw = PathBuf::from(&dir);
+
+        // The raw variable first, before anything has had a chance to resolve
+        // it away. Canonicalising follows symlinks, so checking only the
+        // canonical path meant a link whose own name carried a newline pointed
+        // at a perfectly clean directory, passed, and then came back out raw in
+        // the warning `where_i_looked` prints. Measured: exit 0 and a
+        // `cargo::rustc-link-arg=` of the caller's choosing on the next line.
+        let raw_archive = policy::Archive::at(raw.clone());
+        if let Err(e) = manifest::check_archive_root(&raw_archive.root, &raw_archive.manifest) {
+            fail(&e.to_string());
+        }
+
         // Canonical, because the rpath has to survive being read by a loader in
         // a different working directory than the one cargo built in.
-        let root = root.canonicalize().unwrap_or(root);
+        let root = raw.canonicalize().unwrap_or(raw);
 
-        // Before anything at all is printed that carries the root, the warning
-        // below included. A newline in `ACADSHARP_NATIVE_DIR` splits whichever
-        // line it lands in, and the second half is a directive the caller chose.
+        // And again on the canonical path, because that is the one the link
+        // directives and the rpath carry, and a clean symlink can point at a
+        // directory whose own name is not.
         let archive = policy::Archive::at(root);
         if let Err(e) = manifest::check_archive_root(&archive.root, &archive.manifest) {
             fail(&e.to_string());
@@ -331,12 +343,24 @@ fn cached_archives(target: &str) -> Vec<PathBuf> {
 }
 
 /// `$CARGO_HOME/acadsharp-native`, or the same under the default cargo home.
+///
+/// Checked for a control character here rather than at each call site, because
+/// both call sites print it: `cached_archives` turns it into a
+/// `rustc-link-search` by way of an archive it finds under there, and
+/// `where_i_looked` puts it straight into the `cargo::warning=` line that the
+/// no-archive path always prints. Nothing checked it at all before, so a
+/// `CARGO_HOME` with a newline in it split that warning in two with the second
+/// half a directive of the caller's choosing.
 fn cache_root() -> Option<PathBuf> {
     let home = match std::env::var_os("CARGO_HOME") {
         Some(home) => PathBuf::from(home),
         None => PathBuf::from(std::env::var_os("HOME")?).join(".cargo"),
     };
-    Some(home.join("acadsharp-native"))
+    let root = home.join("acadsharp-native");
+    if let Err(e) = manifest::check_cache_root(&root) {
+        fail(&e.to_string());
+    }
+    Some(root)
 }
 
 /// Says there is no archive, in whichever of the two ways this build wants.

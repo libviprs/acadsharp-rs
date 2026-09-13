@@ -286,6 +286,8 @@ pub enum LinkInfoError {
         manifest: String,
         bad: char,
     },
+    /// The same thing one level up, for the directory the cache lives under.
+    CacheRoot { root: String, bad: char },
 }
 
 impl fmt::Display for LinkInfoError {
@@ -424,6 +426,14 @@ impl fmt::Display for LinkInfoError {
                  into two. The manifest I would have read is {manifest:?}. Point \
                  ACADSHARP_NATIVE_DIR at a directory whose name is a directory name."
             ),
+            Self::CacheRoot { root, bad } => write!(
+                f,
+                "the archive cache would be at {root:?}, and {bad:?} in a path is a control \
+                 character I will not put into a cargo directive: one newline in there turns one \
+                 directive into two. That path is CARGO_HOME, or HOME with `.cargo` on the end \
+                 when CARGO_HOME is unset, so one of those two is a directory name with a control \
+                 character in it."
+            ),
         }
     }
 }
@@ -558,6 +568,13 @@ impl Raw {
 /// This runs before the build script prints anything at all that carries the
 /// root, the warning included, because the warning is one of the lines the
 /// split lands in.
+///
+/// It runs on the **raw** variable as well as on the canonical path, and the
+/// raw one first. Canonicalising is what resolves a symlink away, so a link
+/// whose own name carried a newline used to point at a perfectly clean
+/// directory, pass this check on the clean name, and then land raw in
+/// `where_i_looked`'s warning. Measured, exit 0, with a
+/// `cargo::rustc-link-arg=` of the caller's choosing on the second line.
 pub fn check_archive_root(root: &Path, manifest: &Path) -> Result<(), LinkInfoError> {
     let shown = root.to_string_lossy();
     match shown.chars().find(|c| c.is_control()) {
@@ -565,6 +582,24 @@ pub fn check_archive_root(root: &Path, manifest: &Path) -> Result<(), LinkInfoEr
         Some(bad) => Err(LinkInfoError::ArchiveRoot {
             root: shown.into_owned(),
             manifest: manifest.to_string_lossy().into_owned(),
+            bad,
+        }),
+    }
+}
+
+/// The same rule for the cache root, which nothing checked at all.
+///
+/// `$CARGO_HOME/acadsharp-native` goes into the same `cargo::warning=` line
+/// through `where_i_looked`, and that line is printed on the path where no
+/// archive resolved, which is the path a developer with no archive is on every
+/// time. There is no manifest to name here: this fires before anything has
+/// looked inside the cache at all.
+pub fn check_cache_root(root: &Path) -> Result<(), LinkInfoError> {
+    let shown = root.to_string_lossy();
+    match shown.chars().find(|c| c.is_control()) {
+        None => Ok(()),
+        Some(bad) => Err(LinkInfoError::CacheRoot {
+            root: shown.into_owned(),
             bad,
         }),
     }

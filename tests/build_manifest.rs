@@ -737,6 +737,26 @@ fn an_ordinary_archive_root_is_not_refused() {
         .expect("a path with a space in it is a path");
 }
 
+#[test]
+fn a_cache_root_with_a_newline_in_it_is_refused_and_names_the_variable() {
+    // The other route into the same warning, and the one nothing checked at
+    // all. `$CARGO_HOME/acadsharp-native` is printed by the no-archive path
+    // every time, which is the path a developer with no archive is on.
+    let root = PathBuf::from("/home/someone\ncargo::rustc-env=PWNED=yes/acadsharp-native");
+    let error = manifest::check_cache_root(&root).expect_err("a newline in there splits the line");
+    let shown = error.to_string();
+    assert!(
+        shown.contains("CARGO_HOME") && shown.contains("HOME"),
+        "the refusal has to say which variable to go and look at, and it said: {shown}"
+    );
+}
+
+#[test]
+fn an_ordinary_cache_root_is_not_refused() {
+    manifest::check_cache_root(&PathBuf::from("/home/someone/.cargo/acadsharp-native"))
+        .expect("that is where it lives");
+}
+
 // ---------------------------------------------------------------------------
 // The seven plain string fields, which reach cargo the same way the names do
 // ---------------------------------------------------------------------------
