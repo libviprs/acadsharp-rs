@@ -25,8 +25,7 @@ const EMPTY_VECTOR: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495
 const ABC_VECTOR: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 /// FIPS 180-4 appendix B.2: 56 bytes, so the padding spills into a second
 /// block. This is the case a one-block implementation gets wrong.
-const TWO_BLOCK_MESSAGE: &str =
-    "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+const TWO_BLOCK_MESSAGE: &str = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
 const TWO_BLOCK_VECTOR: &str = "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1";
 
 /// The digest the repository committed for the vendored header, read out of

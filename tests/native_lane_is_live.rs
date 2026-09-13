@@ -17,8 +17,13 @@ fn an_archive_in_the_environment_means_the_native_lane_actually_linked() {
         return;
     };
 
+    // Through a binding rather than inline, because `assert!(cfg!(..))` is a
+    // constant expression and clippy refuses those. The value is decided at
+    // compile time either way; what is decided at run time is whether the
+    // environment claimed an archive.
+    let linked = cfg!(acadsharp_linked);
     assert!(
-        cfg!(acadsharp_linked),
+        linked,
         "ACADSHARP_NATIVE_DIR is set to {dir:?} but `cfg(acadsharp_linked)` is not, so every native test in this \
          run was compiled out and the run went green without calling the library once. Check the build script's \
          warnings: it says which of `lib/` and `metadata/LINKINFO.json` it could not find under that directory."

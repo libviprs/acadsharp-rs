@@ -18,8 +18,12 @@ pub fn header_path() -> PathBuf {
 /// The vendored header's bytes as text.
 pub fn header_text() -> String {
     let path = header_path();
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("I could not read the vendored header at {}: {e}", path.display()))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "I could not read the vendored header at {}: {e}",
+            path.display()
+        )
+    })
 }
 
 /// Drops every `/* ... */` comment, including the multi-line ones, and leaves

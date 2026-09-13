@@ -130,7 +130,10 @@ fn structs_from_header() -> Vec<HeaderStruct> {
             });
         }
 
-        assert!(!fields.is_empty(), "`struct {name}` has no fields, so the parser found nothing to check");
+        assert!(
+            !fields.is_empty(),
+            "`struct {name}` has no fields, so the parser found nothing to check"
+        );
         out.push(HeaderStruct {
             name,
             size: round_up(cursor, align),

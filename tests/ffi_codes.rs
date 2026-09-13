@@ -95,13 +95,19 @@ fn the_crate_declares_exactly_the_codes_the_header_declares() {
         .map(|(name, value)| ((*name).to_string(), u64::from(*value)))
         .collect();
 
-    let missing: Vec<&String> = header.keys().filter(|k| !crate_codes.contains_key(*k)).collect();
+    let missing: Vec<&String> = header
+        .keys()
+        .filter(|k| !crate_codes.contains_key(*k))
+        .collect();
     assert!(
         missing.is_empty(),
         "the header declares these result codes and `ffi.rs` does not: {missing:?}"
     );
 
-    let invented: Vec<&String> = crate_codes.keys().filter(|k| !header.contains_key(*k)).collect();
+    let invented: Vec<&String> = crate_codes
+        .keys()
+        .filter(|k| !header.contains_key(*k))
+        .collect();
     assert!(
         invented.is_empty(),
         "`ffi.rs` declares these result codes and the header does not: {invented:?}"
@@ -124,7 +130,10 @@ fn the_table_lists_every_constant_the_source_declares() {
         "I found no `pub const VIPRS_ACAD_*` lines in `src/ffi.rs`, so this check is looking at the wrong thing"
     );
 
-    let mut tabled: Vec<String> = ffi::RESULT_CODES.iter().map(|(n, _)| (*n).to_string()).collect();
+    let mut tabled: Vec<String> = ffi::RESULT_CODES
+        .iter()
+        .map(|(n, _)| (*n).to_string())
+        .collect();
     tabled.sort();
 
     assert_eq!(
