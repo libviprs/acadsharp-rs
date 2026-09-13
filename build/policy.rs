@@ -73,17 +73,28 @@ pub struct Features {
     pub link_shared: bool,
 }
 
-/// The three numbers the vendored header declares, which an archive has to
-/// agree with.
+/// What the vendored header declares, which an archive has to agree with.
 ///
 /// Passed in rather than read from a constant here, because where they come
 /// from is the expectations half of `build.rs` and that half belongs to another
 /// issue. This file only compares.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `header_sha256` is the whole 256-bit digest, and it is here because
+/// `abi_fingerprint` is only the first eight bytes of it. Comparing the
+/// fingerprint checks 64 of those bits and leaves the other 192 read,
+/// validated for shape and compared against nothing. It is also the only
+/// witness there is for `native/NATIVE_HEADER_REV`: nothing checks that file
+/// against anything, and a header re-vendored from a different commit hashes
+/// differently, so this comparison is what notices.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Expectations {
     pub abi_version: u32,
     pub wire_version: u32,
     pub abi_fingerprint: u64,
+    /// Where the vendored header sits, so a refusal can name both files.
+    pub header_file: String,
+    /// Its sha256, all 64 lowercase hex characters of it.
+    pub header_sha256: String,
 }
 
 /// Which of the two link modes was chosen.
@@ -165,6 +176,14 @@ pub enum PolicyError {
         found_text: String,
         expected: u64,
     },
+    /// The manifest's `abi_header_sha256` is not the digest of the header this
+    /// crate vendored, in the 192 bits the fingerprint never covers.
+    HeaderDigestMismatch {
+        manifest: String,
+        header_file: String,
+        found: String,
+        expected: String,
+    },
     /// `link-static` on an archive that never certified a static link.
     StaticNotCertified { manifest: String, target: String },
     /// A manifest asking for link arguments, which cannot be delivered from a
@@ -225,6 +244,20 @@ impl fmt::Display for PolicyError {
                  library that loads, resolves every symbol, and reads a struct field four bytes \
                  from where this crate believes it is. Take the archive that matches, or \
                  re-vendor the header."
+            ),
+            Self::HeaderDigestMismatch {
+                manifest,
+                header_file,
+                found,
+                expected,
+            } => write!(
+                f,
+                "{manifest} says `abi_header_sha256` {found} and {header_file}, the header this \
+                 crate vendored, hashes to {expected}. `abi_fingerprint` is only the first eight \
+                 bytes of that digest, so these two can agree on 64 bits and still be different \
+                 files: the archive was built against a revision of the header that this crate \
+                 does not have. Take the archive that matches the vendored header, or re-vendor \
+                 the header (and move native/NATIVE_HEADER_REV with it)."
             ),
             Self::StaticNotCertified { manifest, target } => write!(
                 f,
@@ -298,6 +331,21 @@ pub fn choose(
             found: info.abi_fingerprint,
             found_text: info.abi_fingerprint_text.clone(),
             expected: expected.abi_fingerprint,
+        });
+    }
+    // And then the other 192 bits. The fingerprint is the head of this digest,
+    // so the comparison above covers a quarter of it and the rest was read,
+    // shape-checked and never compared with anything. Strings here rather than
+    // numbers because a sha256 does not fit one, and both sides are 64
+    // lowercase hex characters by the time they get here: `check_digest`
+    // enforces that on the manifest's side and `sha256::hex` produces it on the
+    // header's, so there is no presentation left to disagree about.
+    if info.abi_header_sha256 != expected.header_sha256 {
+        return Err(PolicyError::HeaderDigestMismatch {
+            manifest: at,
+            header_file: expected.header_file.clone(),
+            found: info.abi_header_sha256.clone(),
+            expected: expected.header_sha256.clone(),
         });
     }
 

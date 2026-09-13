@@ -117,11 +117,16 @@ pub const EXPECTED_ABI_FINGERPRINT: u64 = {fingerprint:#018x};
         .unwrap_or_else(|e| panic!("I could not write {}: {e}", out.display()));
 
     // The one thing that crosses from the expectations half into the archive
-    // half: the three numbers an archive's manifest has to agree with.
+    // half: what an archive's manifest has to agree with. The digest goes with
+    // the three numbers because `abi_fingerprint` is only its first eight
+    // bytes, so comparing that alone checks 64 of 256 bits and leaves the rest
+    // read, shape-checked and compared with nothing.
     resolve_and_link(policy::Expectations {
         abi_version,
         wire_version,
         abi_fingerprint: fingerprint,
+        header_file: HEADER.to_string(),
+        header_sha256: sha256::hex(&digest),
     });
 }
 

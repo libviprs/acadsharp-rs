@@ -573,6 +573,45 @@ fn a_fingerprint_from_another_header_stops_the_build_with_both_values() {
 }
 
 #[test]
+fn a_header_digest_from_another_revision_stops_the_build_with_both_files() {
+    // The 192 bits `abi_fingerprint` never covers. This digest shares its
+    // first eight bytes with the real one, so the fingerprint comparison and
+    // the manifest's own prefix rule both pass and the only thing left to
+    // notice is the digest itself. This is the end-to-end half: the pure test
+    // in `tests/link_policy.rs` proves `choose` compares them, and this one
+    // proves `build.rs` hands it the vendored header's own digest rather than
+    // something it made up.
+    let dir = scratch("wrong-header-digest");
+    let text = mutated(
+        "aarch64-unknown-linux-gnu",
+        "0502ac0f616115300fc52c84d99054e366a7ea520363f166d463b44c506233fa",
+        "0502ac0f61611530ffffffffffffffffffffffffffffffffffffffffffffffff",
+    );
+    let root = unpack(&dir, &text);
+    let run = Run::new(&dir).archive(&root).go(&dir);
+
+    assert!(
+        !run.ok,
+        "this is supposed to stop the build: {}",
+        run.everything()
+    );
+    assert!(
+        run.stderr.contains("LINKINFO.json") && run.stderr.contains("native/viprs_acadsharp.h"),
+        "the refusal has to name both files: {}",
+        run.everything()
+    );
+    assert!(
+        run.stderr
+            .contains("0502ac0f61611530ffffffffffffffffffffffffffffffffffffffffffffffff")
+            && run
+                .stderr
+                .contains("0502ac0f616115300fc52c84d99054e366a7ea520363f166d463b44c506233fa"),
+        "and both digests: {}",
+        run.everything()
+    );
+}
+
+#[test]
 fn a_schema_version_from_the_future_stops_the_build() {
     let dir = scratch("future-schema");
     let text = mutated(
