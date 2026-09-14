@@ -7,12 +7,25 @@
 //! the file it describes the first time that file changes, and it drifts in
 //! the one direction that does damage, by carrying on reporting agreement.
 //!
-//! The second is to find the native archive, if there is one, read its
+//! The second is `COMPAT.toml`, the compatibility declaration, which is read
+//! and then checked against everything it declares: the two versions and the
+//! digest against the header, and the two artifact fields against the
+//! archive's manifest. A value in there that disagrees stops the build. Why
+//! the declaration is checked rather than believed is in `build/compat.rs`.
+//!
+//! The third is to find the native archive, if there is one, read its
 //! `metadata/LINKINFO.json`, decide whether to link it shared or static, and
 //! print the exact lines that say so. That half starts at the `Archive
 //! resolution and linking` banner and lives in `build/manifest.rs` (what the
 //! manifest means), `build/linkinfo.rs` (the JSON, under `serde_json`) and
 //! `build/policy.rs` (which way to link, as a pure function).
+//!
+//! The second and third meet in exactly one place, inside `resolve_and_link`,
+//! after the root guard has run and the manifest has been read once. The
+//! declaration never resolves a path and never reads an environment variable
+//! of its own. It used to, and that cost two defects at once: every archive
+//! found through the cache went unchecked, and the raw variable reached
+//! cargo's stdout before the guard had refused a control character in it.
 //!
 //! The crate has to build with no archive at all, because `Check & Lint`,
 //! `MSRV` and `Docs` never link one. So a missing archive is a warning and an
@@ -27,6 +40,14 @@ mod linkinfo;
 mod manifest;
 #[path = "build/policy.rs"]
 mod policy;
+// `#[allow(dead_code)]` because the README rendering half of that module, and
+// the hand JSON reader it used before the archive half grew a real parser, are
+// `tests/compat.rs`' to use and this script calls neither. The reader staying
+// off the build path is the point: it is what used to resolve the archive a
+// second time, and both defects that came of that are gone with it.
+#[allow(dead_code)]
+#[path = "build/compat.rs"]
+mod compat;
 #[path = "build/sha256.rs"]
 mod sha256;
 
@@ -36,6 +57,9 @@ use std::path::{Path, PathBuf};
 const HEADER: &str = "native/viprs_acadsharp.h";
 /// The digest committed beside it, in `sha256sum` format.
 const HEADER_DIGEST: &str = "native/viprs_acadsharp.h.sha256";
+
+/// The compatibility declaration, checked against the header and the archive.
+const COMPAT: &str = compat::COMPAT_FILE;
 
 fn main() {
     // Emitting any rerun-if-changed turns off cargo's default "rerun when
@@ -116,18 +140,33 @@ pub const EXPECTED_ABI_FINGERPRINT: u64 = {fingerprint:#018x};
     std::fs::write(&out, generated)
         .unwrap_or_else(|e| panic!("I could not write {}: {e}", out.display()));
 
+    // The declaration, checked against the header it declares. Every number
+    // handed over here came out of the header's bytes a few lines up, so this
+    // is the declaration being checked and never the header.
+    let declared = compat::Compat::read(&manifest_dir.join(COMPAT));
+    declared.check_against_header(
+        abi_version,
+        wire_version,
+        &sha256::hex(&digest),
+        HEADER,
+        COMPAT,
+    );
+
     // The one thing that crosses from the expectations half into the archive
     // half: what an archive's manifest has to agree with. The digest goes with
     // the three numbers because `abi_fingerprint` is only its first eight
     // bytes, so comparing that alone checks 64 of 256 bits and leaves the rest
     // read, shape-checked and compared with nothing.
-    resolve_and_link(policy::Expectations {
-        abi_version,
-        wire_version,
-        abi_fingerprint: fingerprint,
-        header_file: HEADER.to_string(),
-        header_sha256: sha256::hex(&digest),
-    });
+    resolve_and_link(
+        &declared,
+        policy::Expectations {
+            abi_version,
+            wire_version,
+            abi_fingerprint: fingerprint,
+            header_file: HEADER.to_string(),
+            header_sha256: sha256::hex(&digest),
+        },
+    );
 }
 
 fn env_var(name: &str) -> String {
@@ -191,7 +230,7 @@ fn u32_define(header: &str, name: &str) -> u32 {
 /// wants the native lane, through `ACADSHARP_REQUIRE_NATIVE`: there a missing
 /// archive stops the build, because a lane that compiled out is the same colour
 /// as a lane that passed.
-fn resolve_and_link(expected: policy::Expectations) {
+fn resolve_and_link(declared: &compat::Compat, expected: policy::Expectations) {
     let target = env_var("TARGET");
     // From the environment rather than through `cfg!`, which is what lets
     // `tests/build_script.rs` drive a feature combination without asking cargo
@@ -206,6 +245,18 @@ fn resolve_and_link(expected: policy::Expectations) {
     let archive = policy::Archive::at(root);
 
     let info = linkinfo::read(&archive.manifest).unwrap_or_else(|e| fail(&e.to_string()));
+
+    // The archive against the declaration, off the manifest this function
+    // already read and past the root guard this function already ran, before a
+    // single directive is printed. Whichever route found the archive, it comes
+    // through here, which is the half that used to be keyed on
+    // `ACADSHARP_NATIVE_DIR` and so never saw a cached one at all.
+    declared.check_archive(
+        &compat::ArchiveIdentity::new(&info.artifact_version, &info.acadsharp_version),
+        &archive.manifest,
+        COMPAT,
+    );
+
     let plan = policy::choose(&info, features, &target, expected, &archive)
         .unwrap_or_else(|e| fail(&e.to_string()));
 

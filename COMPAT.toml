@@ -1,0 +1,63 @@
+# What this crate declares it is compatible with.
+#
+# Five keys, and none of the five is a fact this crate owns: two belong to the
+# vendored header, one is that header's digest, and two describe archives
+# `libviprs-dep` publishes. So every line here is checked against the thing it
+# describes, and a line that disagrees stops the build. A declaration nothing
+# reads is decoration, and this one is read by `build/compat.rs`, which
+# `build.rs` includes and `tests/compat.rs` compiles into a real test target.
+#
+#   key                       checked against                              by
+#   ------------------------  -------------------------------------------  --------------------------
+#   abi_version               #define VIPRS_ACAD_ABI_VERSION in the header  Compat::check_against_header
+#   wire_version              #define VIPRS_ACAD_WIRE_VERSION in the header Compat::check_against_header
+#   abi_header_sha256         the sha256 of native/viprs_acadsharp.h        Compat::check_against_header
+#   native_artifact_versions  LINKINFO.json's artifact_version              Compat::check_archive
+#   acadsharp_versions        LINKINFO.json's acadsharp_version             Compat::check_archive
+#
+# The first three run on every build, with or without an archive. The last two
+# run when `ACADSHARP_NATIVE_DIR` resolves to an archive with a manifest in it,
+# which is every build that links anything.
+#
+# The two version numbers are declared here and *derived* in `build.rs`, from
+# the header's own bytes, and the build refuses a disagreement. I did it that
+# way round rather than reading the numbers out of this file so that this file
+# cannot become a second hand-typed source of truth: a header bump that forgot
+# this file would otherwise compile clean against a number nobody had checked.
+# Deriving and refusing keeps both properties, the declaration is load bearing
+# and the header still decides.
+#
+# Moving any of this is a runbook, not an edit: docs/UPGRADING.md.
+
+# The VIPRS CAD ABI the vendored header declares. Version 2 is the first bump:
+# it renamed the two `_v1` calls to `get_*_v1`.
+abi_version = 2
+
+# The batch protocol version the vendored header declares. It moves on its own:
+# a record payload can gain a field with no declaration in the header changing,
+# so a consumer that only calls the entry points is unaffected while a consumer
+# that parses the stream is not. Never infer either version from the other.
+wire_version = 2
+
+# The sha256 of `native/viprs_acadsharp.h`, which is also what
+# `native/viprs_acadsharp.h.sha256` pins and what the first eight bytes of
+# `EXPECTED_ABI_FINGERPRINT` are read from. Lowercase hex, no `0x`.
+abi_header_sha256 = "0502ac0f616115300fc52c84d99054e366a7ea520363f166d463b44c506233fa"
+
+# A glob over `artifact_version` in the archive's `metadata/LINKINFO.json`.
+# `*` stands for any run of characters, anchored at both ends, and everything
+# else is a literal. So the `.` before the `*` is a real dot, `3.7.1-viprs.1`
+# and `3.7.1-viprs.12` match, and `3.7.2-viprs.1` does not.
+#
+# `3.7.1-viprs` is the case the issue left open and it does **not** match. The
+# revision after `-viprs.` moves when the shim changes without upstream moving,
+# so it is part of what an artifact version is; an archive claiming a version
+# with no revision is one whose provenance I cannot describe, and I would
+# rather refuse it loudly than link it quietly.
+native_artifact_versions = "3.7.1-viprs.*"
+
+# Every upstream ACadSharp version this crate has been run against. The
+# upstream version is what decides whether a decoded drawing still means what
+# the frozen outputs say it means, so an archive built from one that is not
+# here stops the build rather than showing up later as a fixture diff.
+acadsharp_versions = ["3.7.1"]
