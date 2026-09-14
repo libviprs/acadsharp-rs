@@ -567,12 +567,42 @@ fn the_archive_on_this_machine_satisfies_the_declaration() {
         .unwrap_or_else(|e| panic!("I could not read {}: {e}", manifest.display()));
     let identity = compat::ArchiveIdentity::from_manifest_text(&text, &manifest);
     declaration().check_archive(&identity, &manifest, compat::COMPAT_FILE);
+
+    // The byte comparison below only means anything against the target the
+    // fixture was taken from. `REAL_MANIFEST` is the aarch64 gnu archive, which
+    // is what the local Docker gate links; the `Test` job on GitHub is x86_64
+    // and links a different archive whose `target`, `platform` and `cpu` are
+    // different by construction. Comparing the whole text there conflates two
+    // questions, "is the fixture current" and "which archive is on this
+    // machine", and it fails on the second while claiming the first.
+    //
+    // So: the whole file is compared only on the fixture's own target, and
+    // everything that is a fact about the release rather than about the target
+    // is compared everywhere. The second half is what actually catches a moved
+    // pin, because those are the fields a new release changes.
+    let fixture_target =
+        compat::ArchiveIdentity::from_manifest_text(REAL_MANIFEST, &fake_manifest_path());
     assert_eq!(
-        text.replace("\r\n", "\n").trim(),
-        REAL_MANIFEST.trim(),
-        "the manifest fixture in this test is no longer what the archive ships, so every \
-         archive-free job has been checking a file that does not exist any more"
+        identity.artifact_version, fixture_target.artifact_version,
+        "the archive on this machine is {} and the fixture in this test is {}, so the pin moved \
+         under the fixture and every archive-free job has been checking a release that is no \
+         longer the one CI links",
+        identity.artifact_version, fixture_target.artifact_version
     );
+    assert_eq!(
+        identity.acadsharp_version, fixture_target.acadsharp_version,
+        "the archive on this machine reports ACadSharp {} and the fixture reports {}",
+        identity.acadsharp_version, fixture_target.acadsharp_version
+    );
+
+    if text.contains("\"aarch64-unknown-linux-gnu\"") {
+        assert_eq!(
+            text.replace("\r\n", "\n").trim(),
+            REAL_MANIFEST.trim(),
+            "the manifest fixture in this test is no longer what the aarch64 archive ships, so \
+             every archive-free job has been checking a file that does not exist any more"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
