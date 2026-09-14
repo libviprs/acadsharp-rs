@@ -839,7 +839,7 @@ impl Prologue {
 /// A view's bounding box, when it has a usable one.
 ///
 /// There is no way to build one of these that is not a rectangle:
-/// [`ViewBegin::bounds`] is the only thing that makes one, and it refuses
+/// [`Bounds::from_extents`] is the only thing that makes one, and it refuses
 /// every non-finite or wrong-way-round extent.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bounds {
@@ -851,6 +851,54 @@ pub struct Bounds {
     pub max_x: f64,
     /// Largest y.
     pub max_y: f64,
+}
+
+impl Bounds {
+    /// Reads four extent values as a rectangle, or [`None`] when they are not
+    /// one.
+    ///
+    /// This is the whole of the rule and the only copy of it. A producer with
+    /// no usable extents writes the inverted box, `1e20` in both minima and
+    /// `-1e20` in both maxima, and WIRE.md names `min_x > max_x` as the
+    /// comparison that reads it. That comparison is necessary and not
+    /// sufficient: `NaN > NaN` is false, so a `NaN` extent walks straight past
+    /// it and comes out as a box whose job was to say whether it could be
+    /// used, and one `NaN` poisons every union a caller computes downstream.
+    /// So this asks for the whole rectangle: four finite numbers,
+    /// `min_x <= max_x` and `min_y <= max_y`.
+    ///
+    /// It takes the four numbers rather than fetching them, which is what lets
+    /// [`ViewBegin::bounds`] and [`crate::View::extents`] be the same rule
+    /// rather than two copies of it, and what makes the rule testable in a job
+    /// with no archive and no batch to read.
+    ///
+    /// ```
+    /// use acadsharp_rs::batch::Bounds;
+    ///
+    /// let box_ = Bounds::from_extents([-1.0, -2.0, 3.0, 4.0]).expect("a real box");
+    /// assert_eq!((box_.min_x, box_.max_y), (-1.0, 4.0));
+    ///
+    /// // The inverted box a producer writes when it has no extents.
+    /// assert_eq!(Bounds::from_extents([1e20, 1e20, -1e20, -1e20]), None);
+    /// // And a NaN, which the comparison alone lets straight through.
+    /// assert_eq!(Bounds::from_extents([f64::NAN, 0.0, 10.0, 10.0]), None);
+    /// ```
+    #[must_use]
+    pub fn from_extents(extents: [f64; 4]) -> Option<Self> {
+        let [min_x, min_y, max_x, max_y] = extents;
+        if !extents.iter().all(|v| v.is_finite()) {
+            return None;
+        }
+        if min_x > max_x || min_y > max_y {
+            return None;
+        }
+        Some(Self {
+            min_x,
+            min_y,
+            max_x,
+            max_y,
+        })
+    }
 }
 
 /// How many views the document has, and the code it was read from.
@@ -888,30 +936,13 @@ pub struct ViewBegin<'a> {
 impl ViewBegin<'_> {
     /// The extents as a rectangle, or [`None`] when they are not one.
     ///
-    /// A producer with no usable extents writes the inverted box, `1e20` in
-    /// both minima and `-1e20` in both maxima, and WIRE.md names `min_x >
-    /// max_x` as the comparison that reads it. That comparison is necessary
-    /// and not sufficient: `NaN > NaN` is false, so a `NaN` extent walks
-    /// straight past it and comes out as a box whose job was to say whether it
-    /// could be used. So this asks for the whole rectangle: four finite
-    /// numbers, `min_x <= max_x` and `min_y <= max_y`. Anything else is
-    /// [`None`], and [`ViewBegin::extents`] still carries the bytes verbatim
-    /// for a caller that wants to see what was there.
+    /// [`Bounds::from_extents`] is the rule and this is one of its two
+    /// callers, the other being [`crate::View::extents`] one layer up.
+    /// [`ViewBegin::extents`] still carries the bytes verbatim for a caller
+    /// that wants to see what was there.
     #[must_use]
     pub fn bounds(&self) -> Option<Bounds> {
-        let [min_x, min_y, max_x, max_y] = self.extents;
-        if !self.extents.iter().all(|v| v.is_finite()) {
-            return None;
-        }
-        if min_x > max_x || min_y > max_y {
-            return None;
-        }
-        Some(Bounds {
-            min_x,
-            min_y,
-            max_x,
-            max_y,
-        })
+        Bounds::from_extents(self.extents)
     }
 }
 

@@ -1,4 +1,5 @@
-//! Proof that a declared count never becomes an allocation.
+//! Proof that a declared count never becomes an allocation, and that the layer
+//! above it allocates only what it hands back.
 //!
 //! The instrument is a counting global allocator that records the largest
 //! single request made while it is armed. RSS is the wrong instrument here and
@@ -102,6 +103,118 @@ fn drain(bytes: &[u8]) -> (usize, Option<BatchError>) {
 }
 
 const BUDGET: usize = 1024;
+
+/// The safe layer, which unlike [`acadsharp_rs::batch`] really does allocate:
+/// items are owned, and the batch buffer is a `Vec` this crate keeps.
+///
+/// So the claim here is different. `batch` allocates nothing; `PrimitiveStream`
+/// allocates the buffer it was asked for and the items it hands back, and
+/// nothing else. Two things would break that and neither would fail any other
+/// test in the suite: a per-record allocation that scales with a count a record
+/// declares, and anything the stream keeps across batches.
+#[cfg(acadsharp_linked)]
+fn the_safe_layer(failures: &mut usize) {
+    use acadsharp_rs::{Decoder, Document, Limits, PrimitiveStream};
+
+    /// `VIPRSSYN` with one view and twelve primitives, the same probe input
+    /// every other native test in this crate opens.
+    fn synthetic() -> Vec<u8> {
+        let mut bytes = b"VIPRSSYN".to_vec();
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&12u32.to_le_bytes());
+        bytes
+    }
+
+    fn walk(document: &Document) -> (usize, usize) {
+        let mut stream: PrimitiveStream<'_> = document.decode(0).expect("view 0 decodes");
+        let items = (&mut stream).filter(Result::is_ok).count();
+        assert!(stream.is_complete(), "the walk has to be a complete one");
+        (items, stream.buffer_len())
+    }
+
+    // Everything is built before the counter is armed, so the measurement sees
+    // the walk and nothing else. The handshake and the open both allocate, and
+    // neither of them is what this is about.
+    let bytes = synthetic();
+    let roomy = Decoder::new().expect("the handshake passes against the pinned archive");
+    let roomy = Document::open_bytes(&roomy, &bytes, &Limits::new()).expect("it opens");
+    let cramped = Decoder::new()
+        .expect("the handshake passes")
+        .with_initial_batch_bytes(12);
+    let cramped = Document::open_bytes(&cramped, &bytes, &Limits::new()).expect("it opens");
+
+    let ((items, buffer), first) = measure(|| walk(&roomy));
+    println!(
+        "PrimitiveStream at the default buffer: {items} items, buffer {buffer} bytes, max single \
+         {} bytes, {} bytes over {} requests",
+        first.max_single, first.total, first.requests
+    );
+    if items != 17 {
+        eprintln!("FAIL: the walk produced {items} items and the probe emits 17");
+        *failures += 1;
+    }
+    if first.max_single != buffer {
+        eprintln!(
+            "FAIL: the largest single request during the walk was {} bytes and the batch buffer \
+             is {buffer}, so something other than the buffer asked for the biggest allocation",
+            first.max_single
+        );
+        *failures += 1;
+    }
+
+    // The same walk again. A stream that kept anything across batches, or a
+    // document that accumulated per decode, would cost more the second time.
+    let ((again, _), second) = measure(|| walk(&roomy));
+    println!(
+        "the same walk a second time: {again} items, max single {} bytes, {} bytes over {} \
+         requests",
+        second.max_single, second.total, second.requests
+    );
+    if (second.total, second.requests) != (first.total, first.requests) {
+        eprintln!(
+            "FAIL: the second identical walk allocated {} bytes over {} requests and the first \
+             allocated {} over {}, so something accumulates",
+            second.total, second.requests, first.total, first.requests
+        );
+        *failures += 1;
+    }
+
+    // And with a twelve byte starting buffer, where the stream has to grow. The
+    // growth is to exactly the size the library named, never a doubling and
+    // never a reservation from a count a record declared, so no single request
+    // comes anywhere near the 64 KiB the roomy run spent in one go.
+    let ((items, buffer), tight) = measure(|| walk(&cramped));
+    println!(
+        "PrimitiveStream from a twelve byte buffer: {items} items, buffer grew to {buffer} bytes, \
+         max single {} bytes, {} bytes over {} requests",
+        tight.max_single, tight.total, tight.requests
+    );
+    if items != 17 {
+        eprintln!("FAIL: the cramped walk produced {items} items and the probe emits 17");
+        *failures += 1;
+    }
+    if tight.max_single >= BUDGET {
+        eprintln!(
+            "FAIL: growing from twelve bytes asked for {} bytes in one go, budget is {BUDGET}",
+            tight.max_single
+        );
+        *failures += 1;
+    }
+    if buffer >= BUDGET {
+        eprintln!(
+            "FAIL: the buffer reached {buffer} bytes for a document the library packs into \
+             batches of a few hundred, so it grew by something other than what it was told"
+        );
+        *failures += 1;
+    }
+}
+
+/// With no archive there is nothing to walk, and `tests/native_lane_is_live.rs`
+/// is what stops that gate quietly staying shut in a job meant to open it.
+#[cfg(not(acadsharp_linked))]
+fn the_safe_layer(_failures: &mut usize) {
+    println!("PrimitiveStream: skipped, this build linked no library");
+}
 
 fn main() {
     // Everything is built before the counter is armed, so the measurement sees
@@ -217,6 +330,8 @@ fn main() {
         );
         failures += 1;
     }
+
+    the_safe_layer(&mut failures);
 
     if failures > 0 {
         eprintln!("{failures} allocation checks failed");

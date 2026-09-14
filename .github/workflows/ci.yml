@@ -231,7 +231,15 @@ jobs:
           EOF
           cat > "$down/src/main.rs" <<'EOF'
           fn main() {
-              acadsharp_rs::abi::handshake().expect("the archive matches the vendored header");
+              // `Decoder::new` is the entry point a consumer actually calls, and
+              // it performs the handshake itself. It is deliberately the only
+              // one: `abi::handshake` used to be public and was dropped, because
+              // a public item that exists only when an archive resolved is a
+              // surface a consumer cannot write a `cfg` for.
+              let decoder = acadsharp_rs::Decoder::new()
+                  .expect("the archive matches the vendored header and is linked");
+              let caps = decoder.capabilities();
+              assert!(caps.dwg_version_min() <= caps.dwg_version_max());
               println!("the downstream binary ran");
           }
           EOF

@@ -5,23 +5,100 @@ artifacts published by [`libviprs-dep`](https://github.com/libviprs/libviprs-dep
 
 Callers get Rust types. Neither .NET nor ACadSharp internals reach them.
 
+## Using it
+
+```rust
+use acadsharp_rs::{Decoder, Document, Item, Limits, Primitive};
+
+fn main() -> Result<(), acadsharp_rs::Error> {
+    // The handshake, once. A library built from a different header than the
+    // one this crate vendored is refused here, rather than four bytes into
+    // a struct that looks plausible.
+    let decoder = match Decoder::new() {
+        Ok(decoder) => decoder,
+        // Nothing was linked. A consumer cannot write that cfg themselves,
+        // so it arrives as a value rather than as a missing type.
+        Err(error) if error.is_unlinked() => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    println!("ACadSharp {}", decoder.capabilities().acadsharp_version());
+
+    // `VIPRSSYN` is the library's own synthetic document, so this example
+    // needs no drawing file. For a real one use
+    // `Document::open_path(&decoder, "plan.dwg", &limits)`, which hands the
+    // path across as bytes and never reads the file in Rust.
+    let limits = Limits::new().with_max_polyline_points(100_000);
+    let document = Document::open_bytes(&decoder, b"VIPRSSYN", &limits)?;
+
+    for view in document.views()? {
+        println!("view {} is {:?}, called {}", view.index(), view.kind(), view.name());
+    }
+
+    let mut lines = 0usize;
+    let mut stream = document.decode(0)?;
+    for item in &mut stream {
+        match item? {
+            Item::Primitive(Primitive::Line(line)) => {
+                lines += 1;
+                let _ = (line.start, line.end);
+            }
+            Item::Warning(warning) => println!("{}: {}", warning.code, warning.message),
+            _ => {}
+        }
+    }
+
+    // The totals are the only proof the decode was not truncated, so ask
+    // rather than trusting that the loop ended for a good reason.
+    assert!(stream.is_complete());
+    println!("{lines} lines out of {} records", stream.records_seen());
+    Ok(())
+}
+```
+
+`Decoder` runs the ABI handshake once and reads what the build can do.
+`Document` owns an open drawing and hands out `View`s. `PrimitiveStream` walks
+one view, pulling one native batch at a time into a buffer the caller never
+sees. Nothing accumulates across batches, no raw pointer, no `ffi` type and no
+`unsafe` is reachable from any of it, and none of the three handles is `Send`
+or `Sync`: one decode handle is single threaded and calls on it must not
+overlap.
+
+Three things are worth knowing before the first call.
+
+**The totals are the completeness proof.** A decode that stopped early yields
+its error and then `None`, and `None` on its own looks exactly like an ending.
+`PrimitiveStream::is_complete` compares what came out with what the stream's
+own `DocumentEnd` says should have.
+
+**Warnings are data, in the stream.** A decode that emits a hundred of them and
+finishes succeeded. They arrive inline because reading one often means reading
+what sits beside it.
+
+**Nothing is tessellated or projected.** Arcs, circles, ellipses and splines
+keep their parameters, a polyline's bulges cross as bulges, and every
+coordinate is 3D. Turning a curve into segments needs a tolerance and
+flattening 3D into a plane needs an axis, and neither is a choice this crate
+can make for a consumer it cannot see. `libviprs` makes both downstream.
+
 ## Status
 
-Early. What exists is the raw `ffi` module, a byte-for-byte copy of the frozen
-`viprs_acadsharp.h` under `native/`, and `abi`, which holds the constants
-generated from that header and the handshake that refuses a library built
-against a different one. The safe API on top of it is still being built.
-
-`abi::check` compares the two numbers and is always there. `abi::handshake` is
-the wrapper that asks the library for them, so it exists only in a build that
-linked one (and in the documentation, which is how it stays visible on
-docs.rs).
+The safe API above is in. Underneath it are `batch`, the zero-copy decoder for
+the VACB wire protocol, and `abi`, which holds the constants generated from the
+frozen `viprs_acadsharp.h` vendored under `native/` and `abi::check`, the
+comparison that refuses a library built against a different one. The
+transcription of the header itself and every call into the library sit below
+both of those and are not part of what this crate promises.
 
 The ABI version, the wire version and the fingerprint are generated from the
-vendored header's bytes at build time, so none of the three is typed anywhere in
-Rust source. `native/NATIVE_HEADER_REV` names the `libviprs-dep` commit the
+vendored header's bytes at build time, so none of the three is typed anywhere
+in Rust source. `native/NATIVE_HEADER_REV` names the `libviprs-dep` commit the
 header came from and `native/viprs_acadsharp.h.sha256` pins its contents; the
 build refuses to run if the header and that digest disagree.
+
+With no archive the crate still builds, checks, tests and documents. The public
+surface is the same either way and `Decoder::new` answers `Error::Unlinked`
+instead of disappearing, because a consumer cannot write
+`cfg(acadsharp_linked)` themselves.
 
 ## What this crate is compatible with
 
@@ -74,7 +151,8 @@ beside this checkout, which is a different thing and is described below.
 To link the library and run the tests that call it, unpack a `libviprs-dep`
 archive and point `ACADSHARP_NATIVE_DIR` at the directory holding `lib/` and
 `metadata/LINKINFO.json`. Without that the crate still builds, checks and
-documents, and everything that reaches the library is compiled out.
+documents: the public surface is the same either way, the calls underneath it
+are what is compiled out, and `Decoder::new` answers `Error::Unlinked`.
 
 If you are building a **binary** on top of this crate rather than a library,
 read [What a binary that depends on this crate has to do](#what-a-binary-that-depends-on-this-crate-has-to-do)
@@ -139,7 +217,7 @@ with exit code 127. Three ways out, and the first is the one to reach for:
    `links = "acadsharp_native"`, so cargo hands your build script the archive's
    location:
 
-   ```rust
+   ```text
    // build.rs in the crate that produces the binary
    fn main() {
        if let Ok(dir) = std::env::var("DEP_ACADSHARP_NATIVE_LIB_DIR") {

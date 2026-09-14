@@ -15,7 +15,7 @@
 use std::ptr;
 
 use acadsharp_rs::{
-    EXPECTED_ABI_FINGERPRINT, EXPECTED_ABI_VERSION, EXPECTED_WIRE_VERSION, abi, ffi,
+    Decoder, EXPECTED_ABI_FINGERPRINT, EXPECTED_ABI_VERSION, EXPECTED_WIRE_VERSION, ffi,
 };
 
 #[test]
@@ -43,15 +43,16 @@ fn the_library_reports_the_fingerprint_of_the_vendored_header() {
 
 #[test]
 fn the_handshake_succeeds_against_the_pinned_archive() {
-    // No `unsafe` block, because `handshake` is safe: it makes the two
-    // argument-free infallible calls above and hands the answers to
-    // `abi::check`, so there is no obligation left for me to promise anything
-    // about. The comparison itself is tested in every job, archive or no
-    // archive, by `tests/abi_check.rs`. This is the half that needs a library.
-    assert_eq!(
-        abi::handshake(),
-        Ok(()),
-        "the handshake refused the pinned archive"
+    // Through `Decoder::new`, because that is the handshake's only entry point
+    // and is what a consumer calls: it makes the two argument-free infallible
+    // calls above and hands the answers to `abi::check`. The comparison itself
+    // is tested in every job, archive or no archive, by `tests/abi_check.rs`.
+    // This is the half that needs a library.
+    let decoder = Decoder::new();
+    assert!(
+        decoder.is_ok(),
+        "the handshake refused the pinned archive: {:?}",
+        decoder.err()
     );
 }
 

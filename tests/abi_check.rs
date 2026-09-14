@@ -1,9 +1,9 @@
 //! The handshake comparison, in a test that needs no archive.
 //!
 //! This is the crate's only piece of policy and it used to be reachable only
-//! through `ffi::handshake`, which is `#[cfg(acadsharp_linked)]`. Three of the
-//! four CI jobs never link, so three of the four never compiled it: clippy
-//! never linted it, rustdoc never rendered it, and changing the `&&` in the
+//! through a `handshake` gated on `acadsharp_linked`. Three of the four CI
+//! jobs never link, so three of the four never compiled it: clippy never
+//! linted it, rustdoc never rendered it, and changing the `&&` in the
 //! comparison to `||` broke nothing any of them could see. `abi::check` takes
 //! the two numbers as arguments, so it runs everywhere, and the four rows
 //! below are the whole truth table of a two-term `&&`.

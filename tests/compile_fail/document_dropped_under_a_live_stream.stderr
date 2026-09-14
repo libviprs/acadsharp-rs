@@ -1,0 +1,13 @@
+error[E0505]: cannot move out of `document` because it is borrowed
+  --> tests/compile_fail/document_dropped_under_a_live_stream.rs:11:10
+   |
+ 5 |     let document = Document::open_bytes(&decoder, b"VIPRSSYN", &Limits::new()).unwrap();
+   |         -------- binding `document` declared here
+ 6 |     let stream = document.decode(0).unwrap();
+   |                  -------- borrow of `document` occurs here
+...
+11 |     drop(document);
+   |          ^^^^^^^^ move out of `document` occurs here
+12 |
+13 |     let _ = stream;
+   |             ------ borrow later used here

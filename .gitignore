@@ -34,6 +34,11 @@ Thumbs.db
 *.bak
 *.log
 
+# `trybuild` writes regenerated expected output here when a compile-fail case
+# does not match, and the file it writes is a candidate rather than an answer:
+# it goes into tests/compile_fail/ by hand, after somebody has read it.
+/wip/
+
 # PR-body drafts written into the worktree rather than a shared scratchpad, so
 # two concurrent agent lanes cannot clobber each other's. The worktree IS the
 # repo, so without this they get swept in by a careless `git add -A`.
