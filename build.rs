@@ -1,4 +1,4 @@
-//! Three jobs, and they are deliberately small.
+//! Two jobs, and they are deliberately small.
 //!
 //! The first is to turn the bytes of `native/viprs_acadsharp.h` into the three
 //! constants the crate compares the library against: the ABI version, the wire
@@ -13,36 +13,41 @@
 //! archive's manifest. A value in there that disagrees stops the build. Why
 //! the declaration is checked rather than believed is in `build/compat.rs`.
 //!
-//! The third is to find the native archive, if there is one, and emit the
-//! link lines for it. That half is deliberately the thin version: shared
-//! linking only, one hand-rolled reader for one field of `LINKINFO.json`, no
-//! `serde`, no features, no static recipe. Issue #3 replaces exactly this half
-//! with the real resolver (both link kinds, the `+whole-archive` ordering, the
-//! full manifest under `serde`, and the `link-static` / `link-shared` feature
-//! pair).
+//! The third is to find the native archive, if there is one, read its
+//! `metadata/LINKINFO.json`, decide whether to link it shared or static, and
+//! print the exact lines that say so. That half starts at the `Archive
+//! resolution and linking` banner and lives in `build/manifest.rs` (what the
+//! manifest means), `build/linkinfo.rs` (the JSON, under `serde_json`) and
+//! `build/policy.rs` (which way to link, as a pure function).
 //!
-//! The two halves meet in exactly one place, marked `issue #6` inside
-//! `resolve_archive`: the archive half hands the declaration the archive it
-//! resolved, and the declaration says whether this crate will link it. That is
-//! two lines, it reads no environment variable and prints nothing, so issue #3
-//! replaces everything around it without it going too.
+//! The second and third meet in exactly one place, inside `resolve_and_link`,
+//! after the root guard has run and the manifest has been read once. The
+//! declaration never resolves a path and never reads an environment variable
+//! of its own. It used to, and that cost two defects at once: every archive
+//! found through the cache went unchecked, and the raw variable reached
+//! cargo's stdout before the guard had refused a control character in it.
 //!
 //! The crate has to build with no archive at all, because `Check & Lint`,
 //! `MSRV` and `Docs` never link one. So a missing archive is a warning and an
-//! absent `cfg`, never an error.
+//! absent `cfg`, never an error, and `link-static` picks nothing until there is
+//! an archive to pick from.
 
-// ---------------------------------------------------------------------------
-// Issue #6 (H3.4) owns `build/compat.rs` and every region below marked with
-// its number. `#[allow(dead_code)]` because the README rendering half of that
-// module is `tests/compat.rs`' to use and this script never calls it.
-// ---------------------------------------------------------------------------
-#[allow(dead_code)]
-#[path = "build/compat.rs"]
-mod compat;
 #[path = "build/header.rs"]
 mod header;
 #[path = "build/linkinfo.rs"]
 mod linkinfo;
+#[path = "build/manifest.rs"]
+mod manifest;
+#[path = "build/policy.rs"]
+mod policy;
+// `#[allow(dead_code)]` because the README rendering half of that module, and
+// the hand JSON reader it used before the archive half grew a real parser, are
+// `tests/compat.rs`' to use and this script calls neither. The reader staying
+// off the build path is the point: it is what used to resolve the archive a
+// second time, and both defects that came of that are gone with it.
+#[allow(dead_code)]
+#[path = "build/compat.rs"]
+mod compat;
 #[path = "build/sha256.rs"]
 mod sha256;
 
@@ -52,10 +57,9 @@ use std::path::{Path, PathBuf};
 const HEADER: &str = "native/viprs_acadsharp.h";
 /// The digest committed beside it, in `sha256sum` format.
 const HEADER_DIGEST: &str = "native/viprs_acadsharp.h.sha256";
-// --- issue #6 (H3.4) -------------------------------------------------------
-/// The compatibility declaration, relative to the manifest directory.
+
+/// The compatibility declaration, checked against the header and the archive.
 const COMPAT: &str = compat::COMPAT_FILE;
-// --- end issue #6 ----------------------------------------------------------
 
 fn main() {
     // Emitting any rerun-if-changed turns off cargo's default "rerun when
@@ -64,17 +68,18 @@ fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-changed=build/header.rs");
     println!("cargo::rerun-if-changed=build/linkinfo.rs");
+    println!("cargo::rerun-if-changed=build/manifest.rs");
+    println!("cargo::rerun-if-changed=build/policy.rs");
     println!("cargo::rerun-if-changed=build/sha256.rs");
     println!("cargo::rerun-if-changed={HEADER}");
     println!("cargo::rerun-if-changed={HEADER_DIGEST}");
-    // --- issue #6 (H3.4) ---------------------------------------------------
-    println!("cargo::rerun-if-changed=build/compat.rs");
-    println!("cargo::rerun-if-changed={COMPAT}");
-    // --- end issue #6 ------------------------------------------------------
     println!("cargo::rerun-if-env-changed=ACADSHARP_NATIVE_DIR");
-    // Without this every `cfg(acadsharp_linked)` in the crate is an
+    println!("cargo::rerun-if-env-changed=ACADSHARP_REQUIRE_NATIVE");
+    println!("cargo::rerun-if-env-changed=CARGO_HOME");
+    // Without these every `cfg(acadsharp_linked)` in the crate is an
     // unexpected_cfgs warning, and the gate denies warnings.
     println!("cargo::rustc-check-cfg=cfg(acadsharp_linked)");
+    println!("cargo::rustc-check-cfg=cfg(acadsharp_static_linked)");
 
     let manifest_dir = PathBuf::from(env_var("CARGO_MANIFEST_DIR"));
     let header_path = manifest_dir.join(HEADER);
@@ -135,10 +140,9 @@ pub const EXPECTED_ABI_FINGERPRINT: u64 = {fingerprint:#018x};
     std::fs::write(&out, generated)
         .unwrap_or_else(|e| panic!("I could not write {}: {e}", out.display()));
 
-    // --- issue #6 (H3.4) ---------------------------------------------------
-    // The declaration, checked against the header it declares. All three
-    // numbers handed over here came out of the header's bytes a few lines up,
-    // so this is the declaration being checked and never the header.
+    // The declaration, checked against the header it declares. Every number
+    // handed over here came out of the header's bytes a few lines up, so this
+    // is the declaration being checked and never the header.
     let declared = compat::Compat::read(&manifest_dir.join(COMPAT));
     declared.check_against_header(
         abi_version,
@@ -147,12 +151,22 @@ pub const EXPECTED_ABI_FINGERPRINT: u64 = {fingerprint:#018x};
         HEADER,
         COMPAT,
     );
-    // The archive half checks it against the archive, if this build has one,
-    // and it does that down there rather than up here on purpose. See the
-    // comment on `resolve_archive`.
-    // --- end issue #6 ------------------------------------------------------
 
-    resolve_archive(&declared);
+    // The one thing that crosses from the expectations half into the archive
+    // half: what an archive's manifest has to agree with. The digest goes with
+    // the three numbers because `abi_fingerprint` is only its first eight
+    // bytes, so comparing that alone checks 64 of 256 bits and leaves the rest
+    // read, shape-checked and compared with nothing.
+    resolve_and_link(
+        &declared,
+        policy::Expectations {
+            abi_version,
+            wire_version,
+            abi_fingerprint: fingerprint,
+            header_file: HEADER.to_string(),
+            header_sha256: sha256::hex(&digest),
+        },
+    );
 }
 
 fn env_var(name: &str) -> String {
@@ -195,131 +209,272 @@ fn u32_define(header: &str, name: &str) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// Archive resolution
+// Archive resolution and linking
 //
-// Issue #3 owns everything below this line and replaces it wholesale, except
-// the two lines marked `issue #6` inside `resolve_archive`, which are where
-// the declaration meets the archive. What is here is the least that lets the
-// native tests run: shared linking, one field read out of the manifest, and a
-// cfg so everything that calls the library can compile out when there is no
-// library.
+// Issue #3 owns everything from here to the end of the file. The half above
+// derives the three constants from the vendored header's bytes and belongs to
+// the expectations lane; the only thing that crosses the line is the
+// `Expectations` value `main` hands down, which is what this half compares an
+// archive's manifest against.
+//
+// Nothing here reaches the network. An archive is already unpacked on disk or
+// there is none, and `tests/build_script.rs` greps this file for the ways of
+// asking for one.
 // ---------------------------------------------------------------------------
 
-/// Finds the archive, checks it against the declaration, and prints the lines
-/// that link it.
+/// Finds an archive, decides how to link it, and prints the lines that say so.
 ///
-/// `declared` is issue #6's and so is the one call it is passed to, marked
-/// below. The check sits inside this function rather than beside it in `main`
-/// because it has to run against **whatever archive resolved**, and it is this
-/// function that decides what that is. Keying it on `ACADSHARP_NATIVE_DIR`
-/// instead, which is what it used to do, is wrong in both directions at once:
-///
-/// - Every other route goes unchecked. Issue #3's resolver also finds an
-///   archive in `$CARGO_HOME/acadsharp-native/...`, and one found there linked
-///   green with `COMPAT.toml` looking at nothing. Measured on a composed tree:
-///   a cached archive declaring `9.9.9-viprs.9` against a declaration of
-///   `3.7.1-viprs.*`, exit 0, with `artifact_version=9.9.9-viprs.9` going out
-///   to every consumer through `cargo::metadata`.
-/// - It reads the variable before this function has canonicalised it and
-///   refused a control character in it. A symlink whose own name carries a
-///   newline resolves to a clean directory, so the guard passed and the
-///   caller's own text was on cargo's stdout as a directive of its own.
-///
-/// So: one resolution, one root that has been through the guard, one manifest
-/// read once, and the declaration checked on the way past.
-fn resolve_archive(declared: &compat::Compat) {
-    let Some(dir) = std::env::var_os("ACADSHARP_NATIVE_DIR") else {
-        warn_no_archive("ACADSHARP_NATIVE_DIR is unset");
+/// A missing archive is a warning and an absent `cfg`, never a failure, because
+/// three of the five CI jobs never link one and the crate has to check, lint
+/// and document without it. The one exception is a job that said out loud it
+/// wants the native lane, through `ACADSHARP_REQUIRE_NATIVE`: there a missing
+/// archive stops the build, because a lane that compiled out is the same colour
+/// as a lane that passed.
+fn resolve_and_link(declared: &compat::Compat, expected: policy::Expectations) {
+    let target = env_var("TARGET");
+    // From the environment rather than through `cfg!`, which is what lets
+    // `tests/build_script.rs` drive a feature combination without asking cargo
+    // to build the whole crate again for each one.
+    let features = policy::Features {
+        link_static: std::env::var_os("CARGO_FEATURE_LINK_STATIC").is_some(),
+    };
+
+    let Some(root) = resolve_root(&target) else {
         return;
     };
-    let root = PathBuf::from(&dir);
-    // Canonical, because the rpath below has to survive being read by a loader
-    // in a different working directory than the one cargo built in.
-    let root = root.canonicalize().unwrap_or(root);
-    let lib_dir = root.join("lib");
-    let manifest = root.join("metadata").join("LINKINFO.json");
+    let archive = policy::Archive::at(root);
 
-    // Before anything at all is printed, because every line below carries the
-    // root and the one that says "no archive resolved" carries it too. A
-    // newline in `ACADSHARP_NATIVE_DIR` splits whichever line it lands in, and
-    // the second half is a directive the caller chose.
-    linkinfo::check_archive_root(&root, &manifest);
+    let info = linkinfo::read(&archive.manifest).unwrap_or_else(|e| fail(&e.to_string()));
 
-    if !lib_dir.is_dir() {
-        warn_no_archive(&format!("{} has no lib/ directory", root.display()));
-        return;
+    // The archive against the declaration, off the manifest this function
+    // already read and past the root guard this function already ran, before a
+    // single directive is printed. Whichever route found the archive, it comes
+    // through here, which is the half that used to be keyed on
+    // `ACADSHARP_NATIVE_DIR` and so never saw a cached one at all.
+    declared.check_archive(
+        &compat::ArchiveIdentity::new(&info.artifact_version, &info.acadsharp_version),
+        &archive.manifest,
+        COMPAT,
+    );
+
+    let plan = policy::choose(&info, features, &target, expected, &archive)
+        .unwrap_or_else(|e| fail(&e.to_string()));
+
+    // Everything the plan is about to name has to actually be in the archive.
+    // A truncated unpack otherwise turns into an undefined-symbol screen at the
+    // end of somebody's link with nothing pointing at why.
+    for relative in policy::required_files(&info, plan.kind) {
+        if let Some(missing) = policy::missing_file(&archive, relative) {
+            fail(&format!(
+                "{} names {relative} and there is no such file at {}. The archive is incomplete, \
+                 which `metadata/CHECKSUMS.txt` inside it is the way to check.",
+                archive.manifest.display(),
+                missing.display()
+            ));
+        }
     }
-    if !manifest.is_file() {
-        warn_no_archive(&format!("{} has no metadata/LINKINFO.json", root.display()));
-        return;
-    }
-    println!("cargo::rerun-if-changed={}", manifest.display());
 
-    let text = std::fs::read_to_string(&manifest)
-        .unwrap_or_else(|e| panic!("I could not read {}: {e}", manifest.display()));
-
-    // --- issue #6 (H3.4) ---------------------------------------------------
-    // The archive against the declaration, before a single link directive is
-    // printed. Two lines, no environment, no path resolution and nothing
-    // printed: issue #3's parser swaps `from_manifest_text` for its own
-    // `LinkInfo` by building the identity from its two fields, and nothing
-    // else here moves.
-    let identity = compat::ArchiveIdentity::from_manifest_text(&text, &manifest);
-    declared.check_archive(&identity, &manifest, COMPAT);
-    // --- end issue #6 ------------------------------------------------------
-
-    let system_libraries = linkinfo::system_libraries(&text, "shared_system_libraries", &manifest);
+    println!("cargo::rerun-if-changed={}", archive.manifest.display());
 
     // Where a downstream build script picks these up, through cargo's `links`
-    // key: `DEP_ACADSHARP_NATIVE_NATIVE_DIR` and `DEP_ACADSHARP_NATIVE_LIB_DIR`.
-    // Emitted after the control-character check above, like everything else
-    // carrying the root.
-    println!("cargo::metadata=native_dir={}", root.display());
-    println!("cargo::metadata=lib_dir={}", lib_dir.display());
+    // key: `DEP_ACADSHARP_NATIVE_NATIVE_DIR` and friends.
+    println!("cargo::metadata=native_dir={}", archive.root.display());
+    println!("cargo::metadata=lib_dir={}", archive.lib_dir.display());
+    println!("cargo::metadata=artifact_version={}", info.artifact_version);
+    println!(
+        "cargo::metadata=link_kind={}",
+        match plan.kind {
+            policy::LinkKind::Static => "static",
+            policy::LinkKind::Shared => "shared",
+        }
+    );
 
-    println!("cargo::rustc-link-search=native={}", lib_dir.display());
-    // `dylib=` spelled out rather than left to the default it already is. This
-    // half of the build script links shared and only shared, and issue #3 adds
-    // the static recipe beside it, so both branches say which one they are.
-    println!("cargo::rustc-link-lib=dylib=acadsharp_native");
-    for name in system_libraries {
-        println!("cargo::rustc-link-lib={name}");
+    for directive in plan.directives() {
+        println!("{directive}");
     }
 
-    // An rpath, because without it none of this runs, and it belongs to the
-    // shared branch above and to nothing else.
-    //
-    // Issue #3 inherits that sentence. `lib/` holds both the `.so` and the
-    // `.a`, and a bare `-l` picks the `.so`, so an rpath left on the static
-    // path means a binary that was supposed to be self-contained links, loads
-    // and runs correctly on the build machine by quietly using the shared
-    // library. That is the silent success the link contract warns about, and
-    // the assertion that catches it is on the binary (`readelf -d` showing no
-    // `NEEDED` and no `RUNPATH`) rather than on the answer the library gives
-    // back.
-    //
-    // `-l acadsharp_native` against a directory holding both a `.so` and a
-    // `.a` picks the `.so`, and cargo does not put a build script's
-    // `rustc-link-search` path on the loader's path: I printed
-    // LD_LIBRARY_PATH from a test runner and it holds `target/debug`,
-    // `target/debug/deps` and the toolchain's own lib dirs, nothing else. So
-    // the test binary linked, and then died at startup with "libacadsharp
-    // _native.so: cannot open shared object file". That failure is a 127 from
-    // the loader before `main`, which is a long way from looking like a
-    // missing search path.
-    //
-    // This is scoped to this package's own binaries, tests and examples, so it
-    // reaches exactly what needs it and nothing a consumer builds. A consumer
-    // linking this crate shared has the same problem and needs its own answer,
-    // which is issue #3's static recipe.
-    println!("cargo::rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
-
     println!("cargo::rustc-cfg=acadsharp_linked");
+    if plan.kind == policy::LinkKind::Static {
+        // So a test that exists to prove the static link happened can gate on
+        // the static link having happened, rather than on a feature that only
+        // says it was asked for.
+        println!("cargo::rustc-cfg=acadsharp_static_linked");
+    }
 }
 
-fn warn_no_archive(why: &str) {
+/// `ACADSHARP_NATIVE_DIR`, then the cache, and nowhere else.
+fn resolve_root(target: &str) -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("ACADSHARP_NATIVE_DIR") {
+        let raw = PathBuf::from(&dir);
+
+        // The raw variable first, before anything has had a chance to resolve
+        // it away. Canonicalising follows symlinks, so checking only the
+        // canonical path meant a link whose own name carried a newline pointed
+        // at a perfectly clean directory, passed, and then came back out raw in
+        // the warning `where_i_looked` prints. Measured: exit 0 and a
+        // `cargo::rustc-link-arg=` of the caller's choosing on the next line.
+        let raw_archive = policy::Archive::at(raw.clone());
+        if let Err(e) = manifest::check_archive_root(&raw_archive.root, &raw_archive.manifest) {
+            fail(&e.to_string());
+        }
+
+        // Canonical, because the rpath has to survive being read by a loader in
+        // a different working directory than the one cargo built in.
+        let root = raw.canonicalize().unwrap_or(raw);
+
+        // And again on the canonical path, because that is the one the link
+        // directives and the rpath carry, and a clean symlink can point at a
+        // directory whose own name is not.
+        let archive = policy::Archive::at(root);
+        if let Err(e) = manifest::check_archive_root(&archive.root, &archive.manifest) {
+            fail(&e.to_string());
+        }
+
+        if !archive.lib_dir.is_dir() {
+            return give_up(
+                target,
+                &format!("{} has no lib/ directory", archive.root.display()),
+            );
+        }
+        if !archive.manifest.is_file() {
+            return give_up(
+                target,
+                &format!("{} has no metadata/LINKINFO.json", archive.root.display()),
+            );
+        }
+        return Some(archive.root);
+    }
+
+    match cached_archives(target).as_slice() {
+        [] => give_up(target, "ACADSHARP_NATIVE_DIR is unset"),
+        [only] => {
+            // Checked for the same reason as the variable above: this path is
+            // built from a directory name somebody else chose.
+            let archive = policy::Archive::at(only.clone());
+            if let Err(e) = manifest::check_archive_root(&archive.root, &archive.manifest) {
+                fail(&e.to_string());
+            }
+            Some(archive.root)
+        }
+        several => give_up(
+            target,
+            &format!(
+                "ACADSHARP_NATIVE_DIR is unset and the cache holds {} archives for this target, \
+                 so I will not guess which one you meant. Set ACADSHARP_NATIVE_DIR to one of \
+                 them.",
+                several.len()
+            ),
+        ),
+    }
+}
+
+/// Every unpacked archive in the cache that is for this target.
+///
+/// The documented layout is
+/// `$CARGO_HOME/acadsharp-native/<artifact_version>/<platform>-<cpu>/`, and the
+/// version component is read from the directory rather than pinned, because the
+/// pin it would need does not exist in this crate yet. That is safe in the one
+/// direction that matters: a stale archive found here still has to get past the
+/// ABI fingerprint comparison, which is the real check and which no amount of
+/// directory naming can fake.
+fn cached_archives(target: &str) -> Vec<PathBuf> {
+    let (Some(root), Some(leaf)) = (cache_root(), policy::cache_leaf(target)) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return Vec::new();
+    };
+
+    let mut found: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join(leaf))
+        .filter(|candidate| candidate.join("metadata").join("LINKINFO.json").is_file())
+        .collect();
+    // `read_dir` hands entries back in whatever order the filesystem feels
+    // like, so two archives in the cache would otherwise pick a different one
+    // on different machines.
+    found.sort();
+    found
+}
+
+/// `$CARGO_HOME/acadsharp-native`, or the same under the default cargo home.
+///
+/// Checked for a control character here rather than at each call site, because
+/// both call sites print it: `cached_archives` turns it into a
+/// `rustc-link-search` by way of an archive it finds under there, and
+/// `where_i_looked` puts it straight into the `cargo::warning=` line that the
+/// no-archive path always prints. Nothing checked it at all before, so a
+/// `CARGO_HOME` with a newline in it split that warning in two with the second
+/// half a directive of the caller's choosing.
+fn cache_root() -> Option<PathBuf> {
+    let home = match std::env::var_os("CARGO_HOME") {
+        Some(home) => PathBuf::from(home),
+        None => PathBuf::from(std::env::var_os("HOME")?).join(".cargo"),
+    };
+    let root = home.join("acadsharp-native");
+    if let Err(e) = manifest::check_cache_root(&root) {
+        fail(&e.to_string());
+    }
+    Some(root)
+}
+
+/// Says there is no archive, in whichever of the two ways this build wants.
+///
+/// Always `None`, so a caller reads `return give_up(..)` as "there is nothing
+/// here" without a second branch.
+fn give_up(target: &str, why: &str) -> Option<PathBuf> {
+    let where_i_looked = where_i_looked(target);
+    if native_lane_required() {
+        fail(&format!(
+            "ACADSHARP_REQUIRE_NATIVE is set, so this build exists to link the native library, \
+             and there is none: {why}. {where_i_looked}"
+        ));
+    }
     println!(
         "cargo::warning=no native archive resolved ({why}), so nothing is linked and every test \
-         that calls the library is compiled out of this build."
+         that calls the library is compiled out of this build. {where_i_looked}"
     );
+    None
+}
+
+/// Both places an archive is looked for, and where one comes from.
+fn where_i_looked(target: &str) -> String {
+    let cache = match (cache_root(), policy::cache_leaf(target)) {
+        (Some(root), Some(leaf)) => format!("{}/<artifact_version>/{leaf}/", root.display()),
+        (Some(root), None) => format!(
+            "{} (and nothing under it, because {target} is not a target the producer publishes \
+             an archive for)",
+            root.display()
+        ),
+        (None, _) => "the cache, whose location I could not work out with neither CARGO_HOME nor \
+                      HOME set"
+            .to_string(),
+    };
+    format!(
+        "I looked in two places: ACADSHARP_NATIVE_DIR, which is {}, and the cache at {cache}. \
+         An archive is a libviprs-dep release asset, unpacked; point the variable at the \
+         directory holding lib/ and metadata/LINKINFO.json, or unpack one into the cache path \
+         above. Nothing here downloads anything.",
+        match std::env::var_os("ACADSHARP_NATIVE_DIR") {
+            Some(dir) => format!("{}", PathBuf::from(dir).display()),
+            None => "unset".to_string(),
+        }
+    )
+}
+
+/// Whether this build said out loud that it wants the native lane.
+///
+/// `Test` sets it as a job-level `env:`, where a step edit cannot lose it. An
+/// empty value and a `0` both read as unset, so nobody has to remember which
+/// spelling turns it off.
+fn native_lane_required() -> bool {
+    match std::env::var("ACADSHARP_REQUIRE_NATIVE") {
+        Ok(value) => !value.is_empty() && value != "0",
+        Err(_) => false,
+    }
+}
+
+/// Stops the build, and says why in one piece.
+fn fail(why: &str) -> ! {
+    panic!("{why}");
 }
