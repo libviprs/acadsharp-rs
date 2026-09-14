@@ -1,155 +1,127 @@
-//! `metadata/LINKINFO.json`, read by hand for the one field this half of the
-//! build script needs.
+//! `metadata/LINKINFO.json`, turned from text into fields by a real JSON
+//! parser.
 //!
-//! A hand reader rather than `serde`, because this is one flat array of short
-//! strings and issue #3 is the PR that adds the dependency along with the rest
-//! of the manifest. It refuses anything it does not understand instead of
-//! guessing, so a manifest shape it was not written for stops the build rather
-//! than quietly linking less than it should.
+//! This module is deliberately thin. All it does is read the document and hand
+//! the fields to [`crate::manifest::Raw::validate`], which owns every rule
+//! about what those fields have to say. The split is what lets the rules be
+//! tested as plain functions: `serde` and `serde_json` are `[build-dependencies]`
+//! and never reach a consumer's binary, which also means a test binary cannot
+//! link them, so `tests/build_manifest.rs` tests the rules directly and
+//! `tests/build_script.rs` drives this layer by running the real build script
+//! over the real manifests.
 //!
-//! It lives here rather than inside `build.rs` so `tests/build_manifest.rs` can
-//! compile it and feed it a manifest, the same way `tests/abi_constants.rs`
-//! compiles `build/sha256.rs` and feeds it the NIST vectors.
+//! # Why a parser rather than the reader this replaces
 //!
-//! # Everything in here ends up in a cargo directive, so everything in here is
-//! checked
+//! The first version of this file read one field by hand: find the key, find
+//! the brackets, split on commas, strip the quotes. It accepted a raw newline
+//! inside a string, which is invalid JSON that any real parser refuses, and
+//! that was an injection. A `shared_system_libraries` entry of
+//! `"m\ncargo::rustc-link-arg=--totally-bogus-linker-flag"` produced those exact
+//! directives in the build script's output and the flag reached the real link
+//! line. `rustc-link-arg` is arbitrary linker flags, so that was build-time code
+//! execution driven by a file arriving inside a downloaded tarball.
 //!
-//! The manifest arrives inside a downloaded tarball, and cargo's build-script
-//! protocol is one directive per line of stdout. So a newline inside a string
-//! this reader repeats is not a broken name, it is the end of one directive and
-//! the start of another one the tarball chose. Proven end to end: a
-//! `shared_system_libraries` entry of `"m\ncargo::rustc-link-arg=...`
-//! put an arbitrary flag on the real link line, and a newline in
-//! `ACADSHARP_NATIVE_DIR` split the `cargo::warning=` line the same way.
+//! Hand-rolling a reader for a twenty-key manifest is two hundred lines that
+//! then need fuzzing for no runtime benefit. So: a parser, under
+//! `[build-dependencies]`, and the validation beside it in a file with no
+//! dependencies at all.
 //!
-//! CI pins the archive by sha256 and that is the real defence. A developer
-//! pointing at an archive they fetched by hand has no such pin, so the reader
-//! refuses rather than trusting the file.
+//! # Unknown keys are skipped, not refused
+//!
+//! `schema_version` moves when a field is removed, renamed or has its meaning
+//! changed, and adding one does not move it. That is the other half of the
+//! version rule: an archive may carry a key this consumer has never heard of,
+//! and this consumer skips it and keeps working. So no `deny_unknown_fields`
+//! here. A version that refused every unknown key would refuse every newer
+//! archive for a field none of them read.
+
+// This file and its two neighbours are compiled into two different crates: the
+// build script, and the test binaries that check them. Each uses a different
+// subset, so something unused here is used over there.
+#![allow(dead_code)]
 
 use std::path::Path;
 
-/// The bare library names one `"name": ["a", "b"]` field lists.
+use serde::Deserialize;
+
+use crate::manifest::{LinkInfo, LinkInfoError, Raw};
+
+/// The manifest as JSON says it, one `Option` per key.
 ///
-/// Every name comes back fit to put after `cargo::rustc-link-lib=`, or nothing
-/// does: one bad entry refuses the whole manifest rather than being dropped,
-/// because a link that silently leaves out a library it was told about fails
-/// somewhere a long way from here.
-pub fn system_libraries(json: &str, field: &str, manifest: &Path) -> Vec<String> {
-    let names = string_array_field(json, field, manifest);
-    for name in &names {
-        check_library_name(name, field, manifest);
-    }
-    names
+/// Every field is optional at this layer on purpose. "Absent" is a fact the
+/// rules next door need to be able to see, and a `#[serde(default)]` here plus
+/// a required-field check there gives a refusal that names the field, where
+/// serde's own missing-field error would name it inside a parser message.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Wire {
+    schema_version: Option<u64>,
+    artifact_version: Option<String>,
+    acadsharp_version: Option<String>,
+    acadsharp_commit: Option<String>,
+    dotnet_sdk: Option<String>,
+    target: Option<String>,
+    platform: Option<String>,
+    cpu: Option<String>,
+    abi_version: Option<u64>,
+    wire_version: Option<u64>,
+    abi_header_sha256: Option<String>,
+    abi_fingerprint: Option<String>,
+    shared_library: Option<String>,
+    shared_system_libraries: Option<Vec<String>>,
+    static_library: Option<String>,
+    static_init_library: Option<String>,
+    static_certified: Option<bool>,
+    static_system_libraries: Option<Vec<String>>,
+    static_link_args: Option<Vec<String>>,
+    dwg_version_min: Option<u64>,
+    dwg_version_max: Option<u64>,
 }
 
-/// What a bare library name may be made of, and nothing else.
-///
-/// This is `[A-Za-z0-9_+.-]`, which covers every name any published archive has
-/// ever listed (`m`, and that is the whole list today) and every plausible one:
-/// `stdc++`, `pthread`, `gcc_s`, `c++abi`, `dl`, `rt`. It is deliberately an
-/// allow list. A deny list of the characters I can think of today is a deny
-/// list that meets a character I did not think of, and this string goes
-/// straight into cargo's line-oriented protocol.
-fn is_legal_in_a_library_name(c: char) -> bool {
-    c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '.' | '-')
-}
-
-/// Refuses a library name that is not a bare library name.
-fn check_library_name(name: &str, field: &str, manifest: &Path) {
-    let Some(bad) = name.chars().find(|c| !is_legal_in_a_library_name(*c)) else {
-        return;
-    };
-    panic!(
-        "`{field}` in {} lists {name:?}, and {bad:?} is not something a bare library name may \
-         contain. I emit these straight after `cargo::rustc-link-lib=`, one directive per line, \
-         so a newline in there is not a broken name: it is a second directive that this manifest \
-         chose and I would be repeating to cargo. Fix the manifest, or the archive it came out of.",
-        manifest.display()
-    );
-}
-
-/// Refuses an archive root with a control character in it.
-///
-/// Same reasoning as the names, one layer out. The root reaches cargo through
-/// `rustc-link-search`, through the rpath and through the `cargo::warning=`
-/// line that says no archive resolved, and a newline in `ACADSHARP_NATIVE_DIR`
-/// splits any of them. Everything else a path may contain is fine: spaces,
-/// unicode, a `:`, all of it survives a single directive line.
-///
-/// This is checked before the build script prints anything at all that carries
-/// the root, including the warning, because the warning is one of the lines
-/// the split lands in.
-pub fn check_archive_root(root: &Path, manifest: &Path) {
-    let shown = root.to_string_lossy();
-    let Some(bad) = shown.chars().find(|c| c.is_control()) else {
-        return;
-    };
-    panic!(
-        "ACADSHARP_NATIVE_DIR resolves to {shown:?}, and {bad:?} in a path is a control \
-         character I will not put into a cargo directive: one newline in there turns one \
-         directive into two. The manifest I would have read is {:?}. Point the variable at a \
-         directory whose name is a directory name.",
-        manifest.to_string_lossy()
-    );
-}
-
-/// Reads one `"name": ["a", "b"]` field out of a JSON document.
-fn string_array_field(json: &str, field: &str, path: &Path) -> Vec<String> {
-    let key = format!("\"{field}\"");
-    let start = json.find(&key).unwrap_or_else(|| {
-        panic!(
-            "{} has no `{field}` field, so I cannot tell what to link",
-            path.display()
-        )
-    });
-
-    let rest = &json[start + key.len()..];
-    let open = rest.find('[').unwrap_or_else(|| {
-        panic!(
-            "`{field}` in {} is not followed by an array",
-            path.display()
-        )
-    });
-    let colon = &rest[..open];
-    assert!(
-        colon.trim() == ":",
-        "`{field}` in {} is not a plain `\"{field}\": [ ... ]` pair",
-        path.display()
-    );
-    let close = rest[open..].find(']').unwrap_or_else(|| {
-        panic!(
-            "`{field}` in {} opens an array it never closes",
-            path.display()
-        )
-    });
-    let body = &rest[open + 1..open + close];
-
-    let mut out = Vec::new();
-    for item in body.split(',') {
-        let item = item.trim();
-        if item.is_empty() {
-            continue;
+impl From<Wire> for Raw {
+    fn from(wire: Wire) -> Self {
+        // Field by field rather than a blanket conversion, so adding a key to
+        // one struct and not the other does not compile.
+        Self {
+            schema_version: wire.schema_version,
+            artifact_version: wire.artifact_version,
+            acadsharp_version: wire.acadsharp_version,
+            acadsharp_commit: wire.acadsharp_commit,
+            dotnet_sdk: wire.dotnet_sdk,
+            target: wire.target,
+            platform: wire.platform,
+            cpu: wire.cpu,
+            abi_version: wire.abi_version,
+            wire_version: wire.wire_version,
+            abi_header_sha256: wire.abi_header_sha256,
+            abi_fingerprint: wire.abi_fingerprint,
+            shared_library: wire.shared_library,
+            shared_system_libraries: wire.shared_system_libraries,
+            static_library: wire.static_library,
+            static_init_library: wire.static_init_library,
+            static_certified: wire.static_certified,
+            static_system_libraries: wire.static_system_libraries,
+            static_link_args: wire.static_link_args,
+            dwg_version_min: wire.dwg_version_min,
+            dwg_version_max: wire.dwg_version_max,
         }
-        assert!(
-            !item.contains('\\'),
-            "`{field}` in {} contains an escape sequence, and this reader does not decode those",
-            path.display()
-        );
-        let unquoted = item
-            .strip_prefix('"')
-            .and_then(|s| s.strip_suffix('"'))
-            .unwrap_or_else(|| {
-                panic!(
-                    "`{item}` in `{field}` of {} is not a quoted string",
-                    path.display()
-                )
-            });
-        assert!(
-            !unquoted.is_empty(),
-            "`{field}` in {} has an empty entry",
-            path.display()
-        );
-        out.push(unquoted.to_string());
     }
-    out
+}
+
+/// Reads one manifest off disk and decides whether it is one.
+pub fn read(manifest: &Path) -> Result<LinkInfo, LinkInfoError> {
+    let text = std::fs::read_to_string(manifest).map_err(|e| LinkInfoError::Unreadable {
+        manifest: manifest.display().to_string(),
+        why: e.to_string(),
+    })?;
+    parse(&text, manifest)
+}
+
+/// The same thing from text, which is the form the tests drive.
+pub fn parse(text: &str, manifest: &Path) -> Result<LinkInfo, LinkInfoError> {
+    let wire: Wire = serde_json::from_str(text).map_err(|e| LinkInfoError::Json {
+        manifest: manifest.display().to_string(),
+        why: e.to_string(),
+    })?;
+    Raw::from(wire).validate(manifest)
 }

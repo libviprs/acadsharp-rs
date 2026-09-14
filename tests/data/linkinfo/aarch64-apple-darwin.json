@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "artifact_version": "3.7.1-viprs.1",
+  "acadsharp_version": "3.7.1",
+  "acadsharp_commit": "d7dc111023477d8a9fffc2153139459c95b4f345",
+  "dotnet_sdk": "10.0.401",
+  "target": "aarch64-apple-darwin",
+  "platform": "mac",
+  "cpu": "arm64",
+  "abi_version": 2,
+  "wire_version": 2,
+  "abi_header_sha256": "0502ac0f616115300fc52c84d99054e366a7ea520363f166d463b44c506233fa",
+  "abi_fingerprint": "0502ac0f61611530",
+  "shared_library": "lib/libacadsharp_native.dylib",
+  "shared_system_libraries": [
+    "icucore.A",
+    "objc.A",
+    "swiftCore",
+    "swiftFoundation",
+    "System.B"
+  ],
+  "static_certified": false,
+  "dwg_version_min": 1014,
+  "dwg_version_max": 1032
+}
