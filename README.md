@@ -100,6 +100,45 @@ surface is the same either way and `Decoder::new` answers `Error::Unlinked`
 instead of disappearing, because a consumer cannot write
 `cfg(acadsharp_linked)` themselves.
 
+## What this crate is compatible with
+
+`COMPAT.toml` at the root is the declaration, and nothing in it is a fact this
+crate owns. Two of the five keys belong to the vendored header, one is that
+header's digest, and two describe the archives `libviprs-dep` publishes. So the
+build checks every line against the thing it describes and refuses to carry on
+when one of them disagrees, which is what keeps the file from becoming
+decoration.
+
+<!-- BEGIN generated from COMPAT.toml -->
+| What `COMPAT.toml` declares | Value | What checks it |
+| --- | --- | --- |
+| `abi_version` | `2` | `#define VIPRS_ACAD_ABI_VERSION` in `native/viprs_acadsharp.h`, every build |
+| `wire_version` | `2` | `#define VIPRS_ACAD_WIRE_VERSION` in `native/viprs_acadsharp.h`, every build |
+| `abi_header_sha256` | `0502ac0f616115300fc52c84d99054e366a7ea520363f166d463b44c506233fa` | the sha256 of `native/viprs_acadsharp.h`, recomputed every build |
+| `native_artifact_versions` | `3.7.1-viprs.*` | `artifact_version` in the archive's `metadata/LINKINFO.json`, when one resolves |
+| `acadsharp_versions` | `3.7.1` | `acadsharp_version` in the archive's `metadata/LINKINFO.json`, when one resolves |
+<!-- END generated from COMPAT.toml -->
+
+The table is generated. `tests/compat.rs` fails when it and `COMPAT.toml`
+disagree, and `ACADSHARP_UPDATE_README=1 cargo test --test compat readme`
+rewrites it.
+
+"When one resolves" in the last two rows means any archive the build script
+finds, whether that is `ACADSHARP_NATIVE_DIR` or the cache under
+`$CARGO_HOME/acadsharp-native/`. The check hangs off the archive rather than off
+a route to it. The same two rows are also checked with no archive at all, by
+reading the release tag CI pins in `.github/actions/fetch-native-archive/action.yml`:
+that tag is `acadsharp-<artifact_version>`, so the pin and the declaration meet
+as two strings in two committed files and a pin that moved without the
+declaration goes red in every job.
+
+The two version numbers are declared there and derived in `build.rs` from the
+header's own bytes, and the build stops when the two disagree. That is the
+other way round from reading the numbers out of the TOML, on purpose: a header
+bump that forgot `COMPAT.toml` would otherwise compile clean against a number
+nobody had checked. `docs/UPGRADING.md` walks an ACadSharp bump through every
+file that has to move.
+
 ## Requirements
 
 - **Rust 1.97+** (edition 2024)
@@ -114,6 +153,95 @@ archive and point `ACADSHARP_NATIVE_DIR` at the directory holding `lib/` and
 `metadata/LINKINFO.json`. Without that the crate still builds, checks and
 documents: the public surface is the same either way, the calls underneath it
 are what is compiled out, and `Decoder::new` answers `Error::Unlinked`.
+
+If you are building a **binary** on top of this crate rather than a library,
+read [What a binary that depends on this crate has to do](#what-a-binary-that-depends-on-this-crate-has-to-do)
+before you run it: the default shared link leaves the loader with nothing to
+find and the failure arrives at startup rather than at link time.
+
+### Where an archive is looked for
+
+Two places, in order, and nowhere else. The build script never downloads
+anything.
+
+1. `ACADSHARP_NATIVE_DIR`, pointing at an unpacked archive root.
+2. `$CARGO_HOME/acadsharp-native/<artifact_version>/<platform>-<cpu>/`, for
+   example `~/.cargo/acadsharp-native/3.7.1-viprs.1/linux-arm64/`. Unpack an
+   archive there and the variable becomes unnecessary. With two versions cached
+   for one target the build script refuses to guess and asks for the variable.
+
+Fetching an archive automatically is a later feature and deliberately not this
+one: a build script that downloads is a build script that behaves differently
+on a machine with no network, and the pin, the digest check and the unpack
+already live in `.github/actions/fetch-native-archive`.
+
+### Shared or static
+
+`link-static` is a Cargo feature, off by default, and off means the shared link.
+
+There is only one feature on purpose. Cargo features are additive: any crate in
+a graph may turn one on and none of them can turn another's off. A `link-shared`
+beside this one existed briefly, and a graph with one dependency asking for each
+unified both on and stopped the build with advice neither author could act on.
+With no feature the plan is already the shared one, so the second feature
+carried that hazard and bought nothing.
+
+`link-static` needs an archive whose `metadata/LINKINFO.json` says
+`static_certified: true`, which is a measurement rather than an intention: it
+is true only where the producer linked the static archive into a probe program
+and ran it on that target. Asking for it anywhere else is a refusal naming the
+target. `link-static` picks nothing until an archive has resolved, so
+`cargo doc --all-features` without one stays green.
+
+### What a binary that depends on this crate has to do
+
+**Static is the mode to deploy in and shared is the mode to develop in.** A
+static link puts the library inside the binary and that binary runs anywhere.
+The shared link does not, and the reason is worth stating plainly rather than
+being discovered.
+
+This crate's build script emits the rpath that finds `libacadsharp_native.so`
+as `cargo::rustc-link-arg`, and cargo binds that to the emitting package's own
+binaries, tests and examples. It goes no further. So this crate's own tests
+link and run, and a binary that depends on this crate links, and then dies
+before `main`:
+
+```
+error while loading shared libraries: libacadsharp_native.so: cannot open
+shared object file: No such file or directory
+```
+
+with exit code 127. Three ways out, and the first is the one to reach for:
+
+1. **A `build.rs` of your own, emitting your own rpath.** This crate declares
+   `links = "acadsharp_native"`, so cargo hands your build script the archive's
+   location:
+
+   ```text
+   // build.rs in the crate that produces the binary
+   fn main() {
+       if let Ok(dir) = std::env::var("DEP_ACADSHARP_NATIVE_LIB_DIR") {
+           println!("cargo::rustc-link-arg=-Wl,-rpath,{dir}");
+       }
+   }
+   ```
+
+   The four variables are `DEP_ACADSHARP_NATIVE_LIB_DIR` (the archive's `lib/`),
+   `DEP_ACADSHARP_NATIVE_NATIVE_DIR` (the archive root),
+   `DEP_ACADSHARP_NATIVE_LINK_KIND` (`shared` or `static`) and
+   `DEP_ACADSHARP_NATIVE_ARTIFACT_VERSION`. They are only set when an archive
+   actually resolved, so read them with a `Result` and carry on without them.
+   Note that this pins the build machine's path into the binary, which is
+   exactly what you want for a developer build and exactly what you do not want
+   for one you ship.
+
+2. **`link-static`.** No loader involved, nothing to find at run time, and the
+   binary is self-contained. This is the answer for anything that leaves the
+   machine that built it.
+
+3. **`LD_LIBRARY_PATH`** pointing at the archive's `lib/`, set wherever the
+   binary runs. The quickest thing to type and the easiest to forget on the
+   machine that matters.
 
 ## Boundary
 
