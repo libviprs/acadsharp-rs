@@ -548,7 +548,7 @@ fn the_suite_job_lays_the_fork_down_before_it_asks_cargo_anything() {
          cannot load the suite's manifest without ../acadrust"
     );
     assert!(
-        job.contains("acadsharp-rs-tests/tools/counterpart.sh"),
+        job.contains("\"$suite/tools/counterpart.sh\""),
         "the fork has to be laid down by the pinned suite's own script, not a copy of its rule"
     );
     assert!(
