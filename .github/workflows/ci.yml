@@ -358,11 +358,16 @@ jobs:
           git -C "$dest" remote add origin "https://github.com/${SUITE_REPO}.git"
           # One sha, fetched as a sha. No branch name, no default-branch
           # fallback, and a fetch that cannot find it is the end of the job.
-          if ! git -C "$dest" fetch --depth 1 origin "$SUITE_REV"; then
-            echo "::error file=SUITE_REV::could not fetch $SUITE_REPO at $SUITE_REV. Either that sha does not exist there or it is not reachable from any ref. There is no fallback branch here on purpose."
+          # Not `--depth 1`: the reachability step below asks git whether the
+          # suite's main reaches this pin, and a shallow pin has no parents on
+          # disk, so merge-base could not tell an open suite PR head from an
+          # unrelated history. `--filter=blob:none` keeps it cheap (commits and
+          # trees only); the blobs come down at checkout.
+          if ! git -C "$dest" fetch --quiet --filter=blob:none origin "+refs/heads/main:refs/remotes/origin/main" "$SUITE_REV"; then
+            echo "::error file=SUITE_REV::could not fetch $SUITE_REPO's main and $SUITE_REV. Either that sha does not exist there or the server will not serve it by sha. There is no fallback branch here on purpose."
             exit 1
           fi
-          git -C "$dest" checkout -q FETCH_HEAD
+          git -C "$dest" checkout -q "$SUITE_REV"
           got="$(git -C "$dest" rev-parse HEAD)"
           if [ "$got" != "$SUITE_REV" ]; then
             echo "::error file=SUITE_REV::asked for $SUITE_REV and the checkout is at $got"
@@ -375,13 +380,32 @@ jobs:
           SUITE_REV: ${{ steps.pin.outputs.rev }}
         run: |
           set -euo pipefail
-          status="$(gh api "repos/$SUITE_REPO/compare/main...$SUITE_REV" --jq .status)"
+          # `gh` exits 1 and prints a 404 body when the compare crosses
+          # unrelated histories (a rewritten suite main). Under `set -e` that
+          # would die inside the command substitution with no word about which
+          # pin is wrong, so it is caught here and turned into a refusal that
+          # names SUITE_REV. An unrelated history can never become mergeable,
+          # so this is refused on every ref, PR branches included.
+          if ! status="$(gh api "repos/$SUITE_REPO/compare/main...$SUITE_REV" --jq .status 2>/dev/null)"; then
+            echo "::error file=SUITE_REV::GitHub could not compare $SUITE_REPO's main with SUITE_REV $SUITE_REV (no common ancestor, or the sha is unknown there). A pin on an unrelated history can never merge; move SUITE_REV onto a commit on the suite's main."
+            exit 1
+          fi
           # GITHUB_REF_NAME is already in this step's environment: `main` on a
           # push to main, `<number>/merge` on a pull_request event, the branch
           # name otherwise. The script reads it and decides. It lives in a file
           # because the `main` arm of the rule cannot be rehearsed by pushing a
           # branch, so `tests/suite_pin_check.rs` drives it instead.
           acadsharp-rs/tools/suite_pin_check.sh "$status" "$SUITE_REV"
+
+      - name: SUITE_REV is reachable from the suite's main
+        env:
+          SUITE_REV: ${{ steps.pin.outputs.rev }}
+        run: |
+          set -euo pipefail
+          # The same question asked of git instead of the API, so the Docker
+          # path and `cargo test` get it without a token. Same script, same
+          # three-way split.
+          acadsharp-rs/tools/suite_pin_check.sh reachable acadsharp-rs-tests/.git "$SUITE_REV"
 
       # Before the resolution check below, because that check is `cargo
       # metadata` and cargo has to exist first.
