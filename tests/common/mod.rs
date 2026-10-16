@@ -150,7 +150,10 @@ pub fn clone_main_with_pin(url: &str, name: &str, pin: &str) -> PathBuf {
          This check needs the network. Set ACADSHARP_OFFLINE=1 to skip it on purpose.",
         text(&out)
     );
-    let fetched = git(&dir, &["fetch", "--quiet", "--filter=blob:none", "origin", pin]);
+    let fetched = git(
+        &dir,
+        &["fetch", "--quiet", "--filter=blob:none", "origin", pin],
+    );
     assert!(
         fetched.status.success(),
         "{pin} cannot be fetched from {url} at all: {}",
@@ -161,7 +164,8 @@ pub fn clone_main_with_pin(url: &str, name: &str, pin: &str) -> PathBuf {
 
 /// `tools/suite_pin_check.sh reachable <clone>/.git <pin> [<pin-file>]`.
 pub fn reachable(clone: &Path, pin: &str, ref_name: &str, pin_file: Option<&str>) -> Output {
-    let mut cmd = Command::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools/suite_pin_check.sh"));
+    let mut cmd =
+        Command::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools/suite_pin_check.sh"));
     cmd.arg("reachable").arg(clone.join(".git")).arg(pin);
     if let Some(f) = pin_file {
         cmd.arg(f);
