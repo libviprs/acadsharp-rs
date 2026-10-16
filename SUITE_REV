@@ -34,4 +34,13 @@
 # action and `tests/counterpart_pin.rs`, so it is the first suite commit this
 # job can do real work against. `compare/main...` reads `identical` today, so
 # the merged-only rule passes here and would pass on `main` too.
-e31863f4778d85e891343b6457093ca03663dc23
+#
+# Moved from e31863f4778d85e891343b6457093ca03663dc23 on 2026-10-16. That
+# commit was the merge commit above until acadsharp-rs-tests' main was
+# rewritten twice (e31863f -> 5ef3bc8 -> 5f0e765) with byte-identical trees, so
+# it stopped being reachable from any branch while GitHub still served it by
+# sha. The pin below has the same tree (68633224...), so nothing the suite does
+# changed; only the commit id did. tests/suite_rev_reachable_issue_17.rs asks
+# git whether main reaches this line, so the next rewrite shows up as a red
+# test instead of as a fetch failure on the day GitHub collects the object.
+5f0e765417f1edaa78d97deba599fc14cb80d303
