@@ -407,6 +407,32 @@ jobs:
           # three-way split.
           acadsharp-rs/tools/suite_pin_check.sh reachable acadsharp-rs-tests/.git "$SUITE_REV"
 
+      # The suite pins a second sibling, the acadrust fork, with `ACADRUST_REV`
+      # beside `COUNTERPART_REV`, and depends on it as `{ path = "../acadrust",
+      # optional = true }`. Cargo reads the manifest of every path dependency
+      # at resolve time, optional or not (rust-lang/cargo#4544), so without
+      # `../acadrust` the `cargo metadata` below fails at manifest load and
+      # nothing about this PR is learned. The fork is laid down by the pinned
+      # suite's own `tools/counterpart.sh`, so the rule (one sha, fetched as a
+      # sha, verified, on the fork's main) is the suite's and not a copy here.
+      #
+      # `SUITE_REV` may still name a suite that predates the pin, which is what
+      # lets this step land first, in the order the suite README gives for a
+      # change that needs both repos. It asks whether the file is there rather
+      # than carrying an `if:` key, which this job may not have: once
+      # `SUITE_REV` has moved past the suite change this is always true.
+      - name: Lay the acadrust fork down at the suite's ACADRUST_REV
+        run: |
+          set -euo pipefail
+          suite="${GITHUB_WORKSPACE}/acadsharp-rs-tests"
+          if [ -f "$suite/ACADRUST_REV" ]; then
+            COUNTERPART_NAME=acadrust \
+              COUNTERPART_REPO="${GITHUB_REPOSITORY_OWNER}/acadrust" \
+              "$suite/tools/counterpart.sh" clone "${GITHUB_WORKSPACE}/acadrust"
+          else
+            echo "the pinned suite has no ACADRUST_REV yet, so there is no fork to lay down"
+          fi
+
       # Before the resolution check below, because that check is `cargo
       # metadata` and cargo has to exist first.
       - uses: dtolnay/rust-toolchain@stable
@@ -503,6 +529,9 @@ jobs:
           # `github.event.pull_request.head.sha`, which is not what is on disk.
           VIPRS_REQUIRE_COUNTERPART: 1
           VIPRS_COUNTERPART_EXPECTED_SHA: ${{ github.sha }}
+          # The suite's pin test for the fork. Set unconditionally: a suite
+          # that predates the fork pin ignores it.
+          ACADRUST_REQUIRE: 1
         # The workflow-level `RUSTFLAGS: -Dwarnings` reaches this too. That
         # matches what the suite's own CI sets, so the suite is held to the same
         # bar here as it is at home and this job cannot red on a warning its own
