@@ -12,7 +12,8 @@ fn root() -> PathBuf {
 
 fn read(rel: &str) -> String {
     let path = root().join(rel);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("could not read {}: {e}", path.display()))
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("could not read {}: {e}", path.display()))
 }
 
 #[test]
