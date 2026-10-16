@@ -398,7 +398,8 @@ fn the_suite_job_is_wired_the_way_the_rule_needs() {
     );
     // Fetch by sha, no branch and no fallback.
     assert!(
-        job.contains("fetch --depth 1 origin"),
+        job.contains("fetch --quiet --filter=blob:none origin")
+            && job.contains("\"$SUITE_REV\""),
         "the suite job does not fetch the suite by sha:\n{job}"
     );
     assert!(
