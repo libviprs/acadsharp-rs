@@ -523,3 +523,47 @@ fn the_native_archive_pin_lives_in_exactly_one_place() {
          native lane calls."
     );
 }
+
+/// The suite pins a second sibling, `../acadrust`, with `ACADRUST_REV`, and
+/// cargo reads every path dependency's manifest at resolve time, optional or
+/// not. So the suite job has to lay the fork down at the suite's own pin before
+/// `cargo metadata` runs, through the pinned suite's own `counterpart.sh` so the
+/// rule is the suite's and not a copy of it here.
+#[test]
+fn the_suite_job_lays_the_fork_down_before_it_asks_cargo_anything() {
+    let path = repo_root().join(".github/workflows/ci.yml");
+    let workflow = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("could not read {}: {e}", path.display()));
+    let job = suite_job_block(&workflow);
+
+    let lay = job
+        .find("COUNTERPART_NAME=acadrust")
+        .unwrap_or_else(|| panic!("the suite job never lays acadrust down:\n{job}"));
+    let metadata = job
+        .find("cargo metadata --format-version 1")
+        .expect("the suite job no longer runs cargo metadata");
+    assert!(
+        lay < metadata,
+        "the suite job lays the fork down after cargo metadata, which is too late: cargo \
+         cannot load the suite's manifest without ../acadrust"
+    );
+    assert!(
+        job.contains("acadsharp-rs-tests/tools/counterpart.sh"),
+        "the fork has to be laid down by the pinned suite's own script, not a copy of its rule"
+    );
+    assert!(
+        job.contains("ACADRUST_REV"),
+        "the step does not read the suite's ACADRUST_REV"
+    );
+    assert!(
+        job.contains("ACADRUST_REQUIRE: 1"),
+        "the suite job does not set ACADRUST_REQUIRE, so the suite could skip its fork check"
+    );
+    // The suite is pinned by SUITE_REV and may predate ACADRUST_REV; the step
+    // has to cope with that (it lands first), by asking whether the file is
+    // there rather than by an `if:` key, which the job may not carry.
+    assert!(
+        job.contains("-f \"$suite/ACADRUST_REV\""),
+        "the step does not ask whether the pinned suite has an ACADRUST_REV yet"
+    );
+}
