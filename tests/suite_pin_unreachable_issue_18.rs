@@ -12,11 +12,28 @@
 //! history can never become mergeable. The suite's own clone action already
 //! does that for its pin; this job does not.
 //!
-//! The second drives `tools/suite_pin_check.sh reachable <git-dir> <sha>`
-//! against a fixture repository whose `main` was rewritten with identical
-//! trees, the exact shape of the real rewrite. That mode is how `cargo test`
-//! and the Docker path get a reachability check that does not need the GitHub
-//! API.
+//! The second drives `tools/suite_pin_check.sh reachable <git-dir> <sha>
+//! [<pin-file>]` against two fixture repositories: one whose `main` was
+//! rewritten from the root with identical trees, the exact shape of the real
+//! rewrite, and one whose rewrite kept a shared ancestor, which is also what
+//! the head of an open suite PR looks like. That mode is how `cargo test` and
+//! the Docker path get a reachability check that does not need the GitHub API,
+//! and it keeps the compare arm's three-way split, because a pin that is not on
+//! `main` is not always wrong:
+//!
+//! - an ancestor of `main` passes on every ref, the way `identical` and
+//!   `behind` do;
+//! - a pin that shares history with `main` but is not on it is refused on
+//!   `main` and allowed with a `::notice` on a PR ref, the way `ahead` and
+//!   `diverged` are, because a crate PR pins the head of an open suite PR on
+//!   purpose (README.md, the paired-change order);
+//! - a pin with no common ancestor is refused on every ref, because an
+//!   unrelated history can never become mergeable, and the refusal names the
+//!   commit on `main` with the same tree, since that is where the pin should
+//!   move.
+//!
+//! The optional pin-file argument only changes the file the annotation names,
+//! so R1.3 can drive the same mode for `native/NATIVE_HEADER_REV`.
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -74,7 +91,13 @@ fn merged_only_step() -> String {
         .min()
         .unwrap_or(0);
     body.iter()
-        .map(|l| if l.len() >= indent { &l[indent..] } else { l.trim_start() })
+        .map(|l| {
+            if l.len() >= indent {
+                &l[indent..]
+            } else {
+                l.trim_start()
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -168,7 +191,7 @@ fn issue_18_an_unrelated_history_is_refused_by_name_on_a_pr_ref() {
 }
 
 // ---------------------------------------------------------------------------
-// The reachability mode, against a fixture with a rewritten main
+// The reachability mode, against fixtures with a rewritten main
 // ---------------------------------------------------------------------------
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -184,14 +207,19 @@ fn git(dir: &Path, args: &[&str]) -> String {
         .env("GIT_COMMITTER_DATE", "2026-09-13T00:00:00Z")
         .output()
         .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
-    assert!(out.status.success(), "git {args:?} failed: {}", joined(&out));
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        joined(&out)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// A repository whose `main` was rewritten the way the suite's was: every
-/// commit replaced by one with the same tree and a different sha. Returns the
-/// git dir, the orphaned old head, and the new head with the same tree.
-fn rewritten_fixture(name: &str) -> (PathBuf, String, String) {
+/// A repository whose `main` was rewritten from the root the way the suite's
+/// was: every commit replaced by one with the same tree and a different sha,
+/// so the old head shares no history at all with the new `main`. Returns the
+/// git dir, the orphaned old head, and the commit on `main` with its tree.
+fn rewritten_from_the_root(name: &str) -> (PathBuf, String, String) {
     let dir = scratch(name);
     git(&dir, &["init", "-q", "-b", "main"]);
     std::fs::write(dir.join("f"), "one\n").unwrap();
@@ -204,51 +232,194 @@ fn rewritten_fixture(name: &str) -> (PathBuf, String, String) {
     let second_tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
 
     // The rewrite: same trees, new messages, so new shas and no shared history.
-    let new_first = git(&dir, &["commit-tree", &first_tree, "-m", "first (rewritten)"]);
+    let new_first = git(
+        &dir,
+        &["commit-tree", &first_tree, "-m", "first (rewritten)"],
+    );
     let new_head = git(
         &dir,
-        &["commit-tree", &second_tree, "-p", &new_first, "-m", "second (rewritten)"],
+        &[
+            "commit-tree",
+            &second_tree,
+            "-p",
+            &new_first,
+            "-m",
+            "second (rewritten)",
+        ],
     );
     git(&dir, &["update-ref", "refs/heads/main", &new_head]);
     (dir.join(".git"), old_head, new_head)
 }
 
-fn reachable(git_dir: &Path, sha: &str) -> Output {
-    Command::new(repo_root().join("tools/suite_pin_check.sh"))
-        .arg("reachable")
-        .arg(git_dir)
-        .arg(sha)
-        .env("GITHUB_REF_NAME", "main")
+/// A repository whose rewrite kept a shared ancestor, the shape libviprs-dep's
+/// has: `main` is first -> second -> third (rewritten), and the old `third`
+/// still hangs off `second`. The old head is related to `main` but not an
+/// ancestor of it, which is also exactly what the head of an open suite PR
+/// looks like from the crate's side. Returns the git dir, the old head, and
+/// the new head with the same tree.
+fn rewritten_from_the_middle(name: &str) -> (PathBuf, String, String) {
+    let dir = scratch(name);
+    git(&dir, &["init", "-q", "-b", "main"]);
+    std::fs::write(dir.join("f"), "one\n").unwrap();
+    git(&dir, &["add", "f"]);
+    git(&dir, &["commit", "-q", "-m", "first"]);
+    std::fs::write(dir.join("f"), "two\n").unwrap();
+    git(&dir, &["commit", "-q", "-am", "second"]);
+    std::fs::write(dir.join("f"), "three\n").unwrap();
+    git(&dir, &["commit", "-q", "-am", "third"]);
+    let old_head = git(&dir, &["rev-parse", "HEAD"]);
+    let second = git(&dir, &["rev-parse", "HEAD~1"]);
+    let third_tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+
+    // The rewrite: same tree, same parent, new message, so a new sha that still
+    // shares `first` and `second` with the old head.
+    let new_head = git(
+        &dir,
+        &[
+            "commit-tree",
+            &third_tree,
+            "-p",
+            &second,
+            "-m",
+            "third (rewritten)",
+        ],
+    );
+    git(&dir, &["update-ref", "refs/heads/main", &new_head]);
+    (dir.join(".git"), old_head, new_head)
+}
+
+/// The two kinds of ref the mode has to answer on: a push to `main`, and a
+/// pull_request event, where GITHUB_REF_NAME is `<number>/merge`.
+const REFS: [&str; 2] = ["main", "42/merge"];
+
+fn reachable(git_dir: &Path, sha: &str, ref_name: &str, pin_file: Option<&str>) -> Output {
+    let mut cmd = Command::new(repo_root().join("tools/suite_pin_check.sh"));
+    cmd.arg("reachable").arg(git_dir).arg(sha);
+    if let Some(pin_file) = pin_file {
+        cmd.arg(pin_file);
+    }
+    cmd.env("GITHUB_REF_NAME", ref_name)
         .output()
         .expect("run tools/suite_pin_check.sh")
 }
 
-#[test]
-fn issue_18_a_pin_that_a_rewrite_orphaned_is_refused() {
-    let (git_dir, orphan, _) = rewritten_fixture("issue_18_fixture_orphan");
-    let out = reachable(&git_dir, &orphan);
-    let all = joined(&out);
+fn assert_orphan_refused(out: &Output, ref_name: &str, orphan: &str, twin: &str) {
+    let all = joined(out);
     assert_eq!(
         out.status.code(),
         Some(1),
-        "tools/suite_pin_check.sh has no way to refuse a SUITE_REV that main does not reach \
-         (expected exit 1, a policy refusal). It said:\n{all}"
+        "on {ref_name}, tools/suite_pin_check.sh has no way to refuse a SUITE_REV that main does \
+         not reach (expected exit 1, a policy refusal). It said:\n{all}"
     );
     assert!(
-        all.contains("::error file=SUITE_REV::") && all.contains(&orphan),
-        "the refusal does not name SUITE_REV and the pin:\n{all}"
+        all.contains("::error file=SUITE_REV::") && all.contains(orphan),
+        "on {ref_name}, the refusal does not name SUITE_REV and the pin:\n{all}"
+    );
+    assert!(
+        all.contains(twin),
+        "on {ref_name}, main carries {twin}, which has the same tree as the orphaned pin, and the \
+         refusal does not name it. That is where the pin should move, so the message has to say \
+         so, with the full sha, since that is what goes into the pin file:\n{all}"
     );
 }
 
 #[test]
 fn issue_18_a_pin_on_the_rewritten_main_passes_the_reachability_check() {
-    let (git_dir, _, head) = rewritten_fixture("issue_18_fixture_head");
-    let out = reachable(&git_dir, &head);
+    // An ancestor of main is allowed on every ref, the way `identical` and
+    // `behind` are in the compare arm.
+    let (git_dir, _, head) = rewritten_from_the_root("issue_18_fixture_head");
+    for ref_name in REFS {
+        let out = reachable(&git_dir, &head, ref_name, None);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "on {ref_name}, tools/suite_pin_check.sh cannot confirm that a pin on main is \
+             reachable (expected exit 0). It said:\n{}",
+            joined(&out)
+        );
+    }
+}
+
+#[test]
+fn issue_18_a_pin_that_a_rewrite_orphaned_is_refused() {
+    let (git_dir, orphan, twin) = rewritten_from_the_root("issue_18_fixture_orphan");
+    let out = reachable(&git_dir, &orphan, "main", None);
+    assert_orphan_refused(&out, "main", &orphan, &twin);
+}
+
+#[test]
+fn issue_18_a_pin_that_a_rewrite_orphaned_is_refused_on_a_pr_ref() {
+    // The PR-ref allowance is for a pin that is not merged yet. A pin with no
+    // common ancestor can never merge, so the ref makes no difference here.
+    let (git_dir, orphan, twin) = rewritten_from_the_root("issue_18_fixture_orphan_pr");
+    let out = reachable(&git_dir, &orphan, "42/merge", None);
+    assert_orphan_refused(&out, "42/merge", &orphan, &twin);
+}
+
+#[test]
+fn issue_18_a_related_but_unmerged_pin_is_allowed_with_a_notice_on_a_pr_ref() {
+    // The head of an open suite PR, or a rewrite that kept a shared ancestor:
+    // merge-base finds one, is-ancestor says no. A crate PR pins the head of an
+    // open suite PR on purpose, so refusing this here would make a paired
+    // change impossible to test before it merges.
+    let (git_dir, old_head, _) = rewritten_from_the_middle("issue_18_fixture_related_pr");
+    let out = reachable(&git_dir, &old_head, "42/merge", None);
+    let all = joined(&out);
     assert_eq!(
         out.status.code(),
         Some(0),
-        "tools/suite_pin_check.sh cannot confirm that a pin on main is reachable \
-         (expected exit 0). It said:\n{}",
-        joined(&out)
+        "on 42/merge, tools/suite_pin_check.sh refused a pin that shares history with main but is \
+         not on it yet (expected exit 0 with a notice, the way the compare arm allows `ahead` and \
+         `diverged` on a PR ref). It said:\n{all}"
+    );
+    assert!(
+        all.contains("::notice file=SUITE_REV::") && all.contains(&old_head),
+        "on 42/merge, an unmerged pin passed without the notice naming it, the one that says the \
+         follow-up PR is owed once the suite PR merges:\n{all}"
+    );
+}
+
+#[test]
+fn issue_18_a_related_but_unmerged_pin_is_refused_on_main() {
+    // The same pin on main: the follow-up PR that moves SUITE_REV onto the
+    // suite's merge commit is owed, so this run is red, the way `ahead` and
+    // `diverged` are on main.
+    let (git_dir, old_head, _) = rewritten_from_the_middle("issue_18_fixture_related_main");
+    let out = reachable(&git_dir, &old_head, "main", None);
+    let all = joined(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "on main, tools/suite_pin_check.sh let through a pin that main does not reach \
+         (expected exit 1, a policy refusal). It said:\n{all}"
+    );
+    assert!(
+        all.contains("::error file=SUITE_REV::") && all.contains(&old_head),
+        "on main, the refusal does not name SUITE_REV and the pin:\n{all}"
+    );
+}
+
+#[test]
+fn issue_18_the_pin_file_argument_names_the_file_the_annotation_points_at() {
+    // R1.3 drives this same mode for native/NATIVE_HEADER_REV against a
+    // libviprs-dep clone, so the annotation has to point at the file it was
+    // given and not at SUITE_REV. The argument changes nothing else.
+    let (git_dir, orphan, _) = rewritten_from_the_root("issue_18_fixture_pin_file");
+    let out = reachable(&git_dir, &orphan, "main", Some("native/NATIVE_HEADER_REV"));
+    let all = joined(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "with a pin file named, tools/suite_pin_check.sh did not refuse an orphaned pin \
+         (expected exit 1). It said:\n{all}"
+    );
+    assert!(
+        all.contains("::error file=native/NATIVE_HEADER_REV::") && all.contains(&orphan),
+        "the refusal has to point at the pin file it was given, native/NATIVE_HEADER_REV, and \
+         name the pin:\n{all}"
+    );
+    assert!(
+        !all.contains("file=SUITE_REV"),
+        "the refusal still points at SUITE_REV, which is not the file this pin lives in:\n{all}"
     );
 }
