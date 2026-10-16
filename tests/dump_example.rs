@@ -13,20 +13,40 @@
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
+use std::sync::Once;
 
+/// The example as a plain program. `cargo test` builds an example that sets
+/// `test = true` only as a test harness, so this builds the real one, into the
+/// same target directory and profile this test is running from, once.
 fn dump_example() -> PathBuf {
-    // <target>/<profile>/deps/<this test> -> <target>/<profile>/examples/dump
+    static BUILT: Once = Once::new();
+    // <target>/<profile>/deps/<this test> -> <target>/<profile>
     let exe = std::env::current_exe().expect("current_exe");
     let profile_dir = exe
         .parent()
         .and_then(|deps| deps.parent())
-        .expect("the test binary sits in <profile>/deps");
+        .expect("the test binary sits in <profile>/deps")
+        .to_path_buf();
+    let target_dir = profile_dir.parent().expect("a target directory");
+    BUILT.call_once(|| {
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let mut cmd = Command::new(cargo);
+        cmd.args(["build", "--quiet", "--example", "dump", "--manifest-path"])
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+            .arg("--target-dir")
+            .arg(target_dir);
+        if profile_dir.file_name().is_some_and(|n| n == "release") {
+            cmd.arg("--release");
+        }
+        let out = cmd.output().expect("run cargo build --example dump");
+        assert!(
+            out.status.success(),
+            "could not build the dump example:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    });
     let path = profile_dir.join("examples").join("dump");
-    assert!(
-        path.exists(),
-        "the dump example is not built at {}; `cargo test` builds examples, so run it that way",
-        path.display()
-    );
+    assert!(path.exists(), "no dump example at {}", path.display());
     path
 }
 
