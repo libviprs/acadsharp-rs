@@ -83,7 +83,8 @@ fn run(path: &str, view: u32) -> Result<(), String> {
     let mut out = String::new();
     let mut index = 0usize;
     for item in stream {
-        let item = item.map_err(|e| format!("decode of {path} failed after {index} records: {e}"))?;
+        let item =
+            item.map_err(|e| format!("decode of {path} failed after {index} records: {e}"))?;
         let Some(line) = line(index, &item)? else {
             continue;
         };
@@ -119,7 +120,11 @@ fn line(index: usize, item: &Item) -> Result<Option<String>, String> {
         Item::Primitive(p) => primitive(&mut s, index, p),
         // `Item` is non-exhaustive; a variant added later must be looked at
         // rather than silently dropped from a parity measurement.
-        _ => return Err(format!("record {index} is an item this example does not know")),
+        _ => {
+            return Err(format!(
+                "record {index} is an item this example does not know"
+            ));
+        }
     }
     Ok(Some(s))
 }
@@ -341,12 +346,18 @@ fn n(x: f64) -> String {
         digits.insert(0, 0);
     }
     let split = digits.len() - 6;
-    let mut whole: String = digits[..split].iter().map(|d| char::from(b'0' + d)).collect();
+    let mut whole: String = digits[..split]
+        .iter()
+        .map(|d| char::from(b'0' + d))
+        .collect();
     // Leading zeros beyond the first can appear after padding; trim them.
     while whole.len() > 1 && whole.starts_with('0') {
         whole.remove(0);
     }
-    let frac: String = digits[split..].iter().map(|d| char::from(b'0' + d)).collect();
+    let frac: String = digits[split..]
+        .iter()
+        .map(|d| char::from(b'0' + d))
+        .collect();
 
     let zero = whole == "0" && frac.bytes().all(|b| b == b'0');
     if x < 0.0 && !zero {
