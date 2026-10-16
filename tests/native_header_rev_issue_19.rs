@@ -2,144 +2,59 @@
 //! that `main` reaches, and the header at that commit has to be the header
 //! vendored here.
 //!
-//! `docs/UPGRADING.md` says this pin "is checked by nothing". libviprs-dep's
-//! `main` was then rewritten with identical trees, so the pin names a commit no
-//! branch or tag reaches while the header bytes stay right. Nothing could have
-//! noticed. These two tests are the check.
+//! `docs/UPGRADING.md` used to say this pin "is checked by nothing".
+//! libviprs-dep's `main` was rewritten with identical trees, so the pin named a
+//! commit no branch or tag reached while the header bytes stayed right, and
+//! nothing could have noticed. This is the check.
 //!
-//! Both need the network. Without it they fail and say so, unless
-//! `ACADSHARP_OFFLINE=1`, which skips them out loud.
+//! One clone serves both assertions. The ancestry question goes to
+//! `tools/suite_pin_check.sh reachable` with the pin file named, called with
+//! `GITHUB_REF_NAME=main`: this pin never names a PR head, so the leniency
+//! `SUITE_REV` has on a PR ref does not apply and only an ancestor passes.
+//!
+//! Needs the network. Without it the test fails and says so, unless
+//! `ACADSHARP_OFFLINE=1`, which skips it out loud.
 #![cfg(unix)]
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+mod common;
 
 const HEADER_IN_DEP: &str = "acadsharp/include/viprs_acadsharp.h";
+const PIN_FILE: &str = "native/NATIVE_HEADER_REV";
 
 fn dep_url() -> String {
     std::env::var("ACADSHARP_DEP_URL")
         .unwrap_or_else(|_| "https://github.com/libviprs/libviprs-dep.git".to_string())
 }
 
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn offline() -> bool {
-    std::env::var("ACADSHARP_OFFLINE").as_deref() == Ok("1")
-}
-
-fn header_rev() -> String {
-    let path = repo_root().join("native/NATIVE_HEADER_REV");
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("could not read {}: {e}", path.display()));
-    text.lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty() && !l.starts_with('#'))
-        .unwrap_or_else(|| panic!("NATIVE_HEADER_REV has no payload line"))
-        .split_whitespace()
-        .next()
-        .unwrap()
-        .to_string()
-}
-
-fn git(dir: &Path, args: &[&str]) -> Output {
-    Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .unwrap_or_else(|e| panic!("could not run git {args:?}: {e}"))
-}
-
-fn text(out: &Output) -> String {
-    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
-    s.push_str(&String::from_utf8_lossy(&out.stderr));
-    s.trim().to_string()
-}
-
-/// A blob-less clone of libviprs-dep's `main` with the pinned commit fetched
-/// into it. Blobs arrive lazily, only for what `git show` asks for.
-fn dep_with_pin(name: &str, pin: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
-    let _ = std::fs::remove_dir_all(&dir);
-    let out = Command::new("git")
-        .args([
-            "clone",
-            "--quiet",
-            "--filter=blob:none",
-            "--no-checkout",
-            "--single-branch",
-            "--branch",
-            "main",
-        ])
-        .arg(dep_url())
-        .arg(&dir)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .unwrap_or_else(|e| panic!("could not run git clone: {e}"));
-    assert!(
-        out.status.success(),
-        "could not clone {}'s main: {}\n\
-         This check needs the network. Set ACADSHARP_OFFLINE=1 to skip it on purpose.",
-        dep_url(),
-        text(&out)
-    );
-    let fetched = git(&dir, &["fetch", "--quiet", "origin", pin]);
-    assert!(
-        fetched.status.success(),
-        "NATIVE_HEADER_REV {pin} cannot be fetched from {} at all: {}",
-        dep_url(),
-        text(&fetched)
-    );
-    dir
-}
-
 #[test]
-fn issue_19_native_header_rev_is_on_libviprs_dep_main() {
-    if offline() {
-        eprintln!("issue_19: ACADSHARP_OFFLINE=1, so I did NOT check NATIVE_HEADER_REV's reachability");
+fn issue_19_native_header_rev_is_on_libviprs_dep_main_and_names_the_vendored_header() {
+    if common::offline() {
+        eprintln!(
+            "issue_19: ACADSHARP_OFFLINE=1, so I did NOT check NATIVE_HEADER_REV's reachability \
+             or compare the vendored header with its"
+        );
         return;
     }
-    let pin = header_rev();
-    let dep = dep_with_pin("issue_19_dep_reach", &pin);
-    let ancestor = git(&dep, &["merge-base", "--is-ancestor", &pin, "refs/remotes/origin/main"]);
-    if ancestor.status.success() {
-        return;
-    }
-    let main = text(&git(&dep, &["rev-parse", "refs/remotes/origin/main"]));
-    let tree = text(&git(&dep, &["rev-parse", &format!("{pin}^{{tree}}")]));
-    let log = text(&git(&dep, &["log", "--format=%H %T", "refs/remotes/origin/main"]));
-    let twin = log
-        .lines()
-        .find_map(|l| {
-            let (c, t) = l.split_once(' ')?;
-            (t == tree).then(|| c.to_string())
-        })
-        .unwrap_or_else(|| "no commit on main".to_string());
-    panic!(
-        "NATIVE_HEADER_REV {pin} is not on libviprs-dep's main (main is at {main}), so the \
-         provenance it records points at a commit no branch or tag reaches. \
-         The commit on main with the same tree ({tree}) is: {twin}."
-    );
-}
+    let pin = common::pin_payload(PIN_FILE);
+    let dep = common::clone_main_with_pin(&dep_url(), "issue_19_dep", &pin);
 
-#[test]
-fn issue_19_the_header_at_native_header_rev_is_the_vendored_header() {
-    if offline() {
-        eprintln!("issue_19: ACADSHARP_OFFLINE=1, so I did NOT compare the vendored header with NATIVE_HEADER_REV's");
-        return;
-    }
-    let pin = header_rev();
-    let dep = dep_with_pin("issue_19_dep_bytes", &pin);
-    let shown = git(&dep, &["show", &format!("{pin}:{HEADER_IN_DEP}")]);
+    let out = common::reachable(&dep, &pin, "main", Some(PIN_FILE));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "NATIVE_HEADER_REV {pin} is not on {}'s main, so the provenance it records points at a \
+         commit no branch or tag reaches:\n{}",
+        dep_url(),
+        common::text(&out)
+    );
+
+    let shown = common::git(&dep, &["show", &format!("{pin}:{HEADER_IN_DEP}")]);
     assert!(
         shown.status.success(),
         "libviprs-dep at {pin} has no {HEADER_IN_DEP}: {}",
-        text(&shown)
+        common::text(&shown)
     );
-    let vendored_path = repo_root().join("native/viprs_acadsharp.h");
+    let vendored_path = common::header_path();
     let vendored = std::fs::read(&vendored_path)
         .unwrap_or_else(|e| panic!("could not read {}: {e}", vendored_path.display()));
     assert!(

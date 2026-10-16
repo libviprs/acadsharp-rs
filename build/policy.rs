@@ -88,9 +88,9 @@ pub struct Features {
 /// `abi_fingerprint` is only the first eight bytes of it. Comparing the
 /// fingerprint checks 64 of those bits and leaves the other 192 read,
 /// validated for shape and compared against nothing. It is also the only
-/// witness there is for `native/NATIVE_HEADER_REV`: nothing checks that file
-/// against anything, and a header re-vendored from a different commit hashes
-/// differently, so this comparison is what notices.
+/// witness there is for a header re-vendored from a different commit, which
+/// hashes differently, so this comparison is what notices. `native/NATIVE_HEADER_REV`
+/// itself is checked against libviprs-dep by `tests/native_header_rev_issue_19.rs`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Expectations {
     pub abi_version: u32,
