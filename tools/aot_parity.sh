@@ -45,10 +45,19 @@ for rec in "$expect"/*.txt; do
   if diff -q "$rec" "$out/$id.txt" > /dev/null; then
     printf '%s\tMATCH\t\n' "$id" >> "$out/verdicts.tsv"
   else
-    # Two lines of `diff` normal format: the first hunk header and the first
-    # recorded line it names.
-    first=$(diff "$rec" "$out/$id.txt" | sed -n '1,3p' | tr '\n' ' ')
-    printf '%s\tDIFF\t%s\n' "$id" "$first" >> "$out/verdicts.tsv"
+    # The first differing record, the way CanonicalDump.FirstDifference names
+    # it: the 0-based index (line number minus one) and the two lines. A
+    # recording that is a prefix of the dump (or the other way round) differs
+    # first at the line one side does not have.
+    hunk=$(diff "$rec" "$out/$id.txt" | head -n 1)
+    line=${hunk%%[acd,]*}
+    # `4a5,6`: the recording has nothing from line 5 on, so line 5 is the first
+    # differing record.
+    case "$hunk" in *a*) line=$((line + 1)) ;; esac
+    idx=$((line - 1))
+    exp=$(sed -n "${line}p" "$rec" | cut -c1-200)
+    act=$(sed -n "${line}p" "$out/$id.txt" | cut -c1-200)
+    printf '%s\tDIFF\trecord %05d expected: %s | actual: %s\n' "$id" "$idx" "${exp:-<end of stream>}" "${act:-<end of stream>}" >> "$out/verdicts.tsv"
     bad=1
   fi
 done
