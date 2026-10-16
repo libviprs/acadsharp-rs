@@ -23,7 +23,7 @@ use std::process::Command;
 /// a realistic 40-hex string to look for in the output. It happens to be the
 /// current `SUITE_REV`, which keeps a reader from wondering whether some other
 /// commit matters.
-const SHA: &str = "e31863f4778d85e891343b6457093ca03663dc23";
+const SHA: &str = "5f0e765417f1edaa78d97deba599fc14cb80d303";
 
 /// `compare/main...<sha>` statuses that mean the pin is on the suite's `main`.
 const MERGED: &[&str] = &["identical", "behind"];
