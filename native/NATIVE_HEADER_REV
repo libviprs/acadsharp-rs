@@ -6,4 +6,9 @@
 # not a build input: nothing downloads anything at build time. Moving the pin
 # means copying the header again, recomputing `viprs_acadsharp.h.sha256`, and
 # letting the layout and code tests say what changed.
-543cdafe7dca0cc7b22d76706b9b7f4017f1e85b
+#
+# Moved from 543cdafe7dca0cc7b22d76706b9b7f4017f1e85b on 2026-10-16: libviprs-dep's
+# main was rewritten after that pin landed, so no branch or tag reached it. The
+# line below is the commit `acadsharp-3.7.1-viprs.1` points at, which main does
+# reach. tests/native_header_rev_issue_19.rs checks both that and the bytes.
+8bf5ad27ddb8f898f900a6dda2c0f9bcadf137db

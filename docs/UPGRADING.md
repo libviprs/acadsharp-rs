@@ -12,15 +12,15 @@ crate only as a published `libviprs-dep` archive, so nothing here installs a
 
 ## The short version
 
-Five things move, they live in four files, and three of the five are checked
-against something else. That last number is the reason this page exists: it
-used to be two, and the two that were not checked were the two that drift.
+Five things move, they live in four files, and every one of them is checked
+against something else. That is the reason this page exists: it used to be
+two, and the ones that were not checked were the ones that drift.
 
 | What moves | Where | What catches it being wrong |
 | --- | --- | --- |
 | The header's bytes | `native/viprs_acadsharp.h` | its digest, below |
 | The header's digest | `native/viprs_acadsharp.h.sha256` | `build.rs` refuses a mismatch on every build |
-| Where the header came from | `native/NATIVE_HEADER_REV` | **nothing**, see below |
+| Where the header came from | `native/NATIVE_HEADER_REV` | `tests/native_header_rev_issue_19.rs`, below |
 | The archive CI fetches | `.github/actions/fetch-native-archive/action.yml` | its own sha256, and now `COMPAT.toml`, in every job |
 | The compatibility declaration | `COMPAT.toml` | `build.rs` against the header, and against the archive's manifest |
 
@@ -61,10 +61,11 @@ sha256sum native/viprs_acadsharp.h | sed 's#native/##' > native/viprs_acadsharp.
 Then put the `libviprs-dep` commit the header came from into
 `native/NATIVE_HEADER_REV`, replacing the sha on the one uncommented line.
 
-**`NATIVE_HEADER_REV` is checked by nothing.** It is provenance: no build reads
-it, no test compares it, and a stale one looks exactly like a fresh one. It is
-the only thing on this page with that property, so it is the one to do while
-you still have the release page open rather than afterwards.
+`NATIVE_HEADER_REV` is provenance, and `tests/native_header_rev_issue_19.rs`
+checks it against libviprs-dep: the commit has to be on libviprs-dep's `main`,
+and `acadsharp/include/viprs_acadsharp.h` at that commit has to be byte for byte
+the header vendored here. It needs the network (`ACADSHARP_OFFLINE=1` skips it,
+out loud), so run it before you push the bump.
 
 The digest beside the header is a different matter: `build.rs` recomputes it
 every build and refuses to run when the two disagree. So an edited header with
