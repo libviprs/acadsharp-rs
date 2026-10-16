@@ -141,7 +141,7 @@ file that has to move.
 
 ## Requirements
 
-- **Rust 1.97+** (edition 2024)
+- **Rust 1.99+** (edition 2024)
 
 Nothing else to build it. The native library arrives as a published release
 artifact rather than as a sibling checkout, so building or using this crate

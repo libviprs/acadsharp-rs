@@ -9,7 +9,7 @@ repository = "https://github.com/libviprs/acadsharp-rs"
 # Matches the floor the rest of the org declares. The `msrv` CI job pins this
 # exact toolchain and fails if this line, the toolchain it installs and the
 # README ever disagree.
-rust-version = "1.97"
+rust-version = "1.99"
 # This package owns the ACadSharp native library, and says so. Three things
 # come with it: cargo refuses a graph where two packages link the same native
 # library, the build script's `cargo::metadata=` lines reach a downstream build

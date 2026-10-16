@@ -91,7 +91,7 @@ jobs:
       - run: cargo clippy --all-targets --features link-static -- -D warnings -W clippy::incompatible_msrv -W deprecated
 
   msrv:
-    # Deliberately not "MSRV (1.97)". A version in a required check's name means
+    # Deliberately not "MSRV (1.99)". A version in a required check's name means
     # the next floor bump renames the context, the old name stays required, and
     # every PR on the repo blocks until someone edits branch protection
     # (libviprs#1011, libviprs-cli#57).
@@ -99,7 +99,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.97
+      - uses: dtolnay/rust-toolchain@1.99
       - uses: Swatinem/rust-cache@v2
       # The floor is written in three places and nothing else compares them, so
       # they drift. `cargo check` cannot catch it, because checking with a newer
