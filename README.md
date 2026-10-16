@@ -268,6 +268,11 @@ branch name in either of them is always wrong: guessing a same-named counterpart
 branch is how `libviprs`' integration job can end up building against the wrong
 tree (libviprs#1013).
 
+If you rewrite `main` in any of acadsharp-rs, acadsharp-rs-tests, acadrust or
+libviprs-dep, move every pin that names it in the same sitting: a rewritten
+`main` leaves the old commit fetchable by sha for a while and reachable from
+nothing, and `tests/suite_rev_reachable_issue_17.rs` is what notices.
+
 ### A change that needs both repos
 
 Land it in this order, and expect the first two steps to be red:
@@ -306,7 +311,8 @@ rather than skips:
   somebody wrote it down: a `[patch]`, a workspace member, `optional = true` or
   an entry under `[dev-dependencies]` all satisfy a text match and change what
   actually gets built.
-- `SUITE_REV` obeys the merged-only rule for the ref the run is on.
+- `SUITE_REV` obeys the merged-only rule for the ref the run is on, and git
+  agrees that the suite's `main` reaches it (`tools/suite_pin_check.sh reachable`).
 - The pinned native archive is unpacked and `ACADSHARP_NATIVE_DIR` is exported
   before the suite builds, through `.github/actions/fetch-native-archive`.
   Everything that reaches the native library is `cfg(acadsharp_linked)`, so a
