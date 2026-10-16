@@ -30,7 +30,8 @@
 # each verdict MATCH, DIFF or ERROR. Exit status is 0 when every recorded
 # fixture matched under `wire`, 1 when any did not.
 #
-# A recording whose fixture is missing is reported as ERROR, never skipped.
+# A recording whose fixture is missing is reported as ERROR, never skipped, and
+# a fixture with no recording is opened and counted (UNRECORDED).
 set -uo pipefail
 
 if [ "$#" -lt 3 ] || [ "$#" -gt 4 ]; then
@@ -83,6 +84,19 @@ for rec in "$expect"/*.txt; do
     fi
   fi
   printf '%s\t%s\t%s\t%s\n' "$id" "$strict" "$wire" "$why" >> "$out/verdicts.tsv"
+done
+
+# A fixture with no recording has nothing to be compared with. It is opened and
+# its records counted, so a decode that fails or comes back empty is visible,
+# and the row says UNRECORDED so nobody reads it as a MATCH.
+for dwg in "$fixtures"/*.dwg; do
+  id=$(basename "$dwg" .dwg)
+  [ -f "$expect/$id.txt" ] && continue
+  if "$dump" "$dwg" > "$out/$id.txt" 2> "$out/$id.err"; then
+    printf '%s\tUNRECORDED\tUNRECORDED\t%s records, opened\n' "$id" "$(wc -l < "$out/$id.txt" | tr -d ' ')" >> "$out/verdicts.tsv"
+  else
+    printf '%s\tUNRECORDED\tERROR\t%s\n' "$id" "$(head -n 1 "$out/$id.err")" >> "$out/verdicts.tsv"
+  fi
 done
 cat "$out/verdicts.tsv"
 exit $bad
