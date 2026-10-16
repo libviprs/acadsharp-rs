@@ -82,3 +82,11 @@ harness = false
 [dev-dependencies]
 trybuild = "1.0"
 # --- end issue #5 (H3.1) ------------------------------------------------
+
+# `examples/dump.rs` carries unit tests for the number and string formatting it
+# has to reproduce from .NET byte for byte, and examples do not run their own
+# tests unless they ask to.
+[[example]]
+name = "dump"
+path = "examples/dump.rs"
+test = true
