@@ -429,6 +429,56 @@ fn the_suite_job_is_wired_the_way_the_rule_needs() {
          in the suite would compile out and this job would stay green:\n{job}"
     );
 
+    // The run step is the suite's gate, the same command the pre-push hook runs
+    // for a push from this repo, so the job and the local gate are one script.
+    // The crate gets no Docker mirror of its own (R4.4).
+    let run_step = "tools/run-tests.sh --in-ci";
+    let plan_step = "tools/run-tests.sh --plan";
+    assert!(
+        job.contains(run_step),
+        "the suite job does not run the suite's gate script (`{run_step}`):\n{job}"
+    );
+    assert!(
+        !job.contains("cargo test --all-targets"),
+        "the suite job still carries its own copy of the suite's cargo lines, which will drift from the gate:\n{job}"
+    );
+    // `--plan` first, so a run says which sha it took for the crate before it
+    // spends a minute testing it.
+    let (plan_at, run_at) = (
+        job.find(plan_step).expect("the suite job never prints the gate's plan"),
+        job.find(run_step).unwrap(),
+    );
+    assert!(plan_at < run_at, "the plan is printed after the gate has already run:\n{job}");
+
+    // The four REQUIRE variables are at job level, where every step sees them,
+    // and not on a step, where only that step does. `Test` carries
+    // ACADSHARP_REQUIRE_NATIVE at job level for the same reason and says why.
+    let (job_level, steps) = job
+        .split_once("\n    steps:")
+        .expect("the suite job has a steps: block");
+    for var in [
+        "VIPRS_REQUIRE_COUNTERPART",
+        "ACADSHARP_REQUIRE_NATIVE",
+        "ACADRUST_REQUIRE",
+        "PARITY_REQUIRE_CORPUS",
+    ] {
+        let line = format!("      {var}: 1");
+        assert!(
+            job_level.lines().any(|l| l == line),
+            "the suite job does not set `{var}: 1` at job level:\n{job_level}"
+        );
+        assert!(
+            !steps.lines().any(|l| l.trim_start().starts_with(&format!("{var}:"))),
+            "the suite job sets {var} on a step as well, which says it is not at job level:\n{steps}"
+        );
+    }
+
+    // The parity run is where the gate leaves it, for when Actions is back.
+    assert!(
+        job.contains("actions/upload-artifact@") && job.contains("acadsharp-rs-tests/target/parity"),
+        "the suite job does not keep the parity run (target/parity):\n{job}"
+    );
+
     // A skipped check is the same colour as a passing one, and a job that
     // swallows its own failure is worse. Neither is allowed in here. Matched as
     // YAML keys rather than as substrings, so the job is still free to explain

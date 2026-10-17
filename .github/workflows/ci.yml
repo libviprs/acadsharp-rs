@@ -312,6 +312,31 @@ jobs:
       # `gh api` wants a token even for a public repo's compare endpoint.
       GH_TOKEN: ${{ github.token }}
       SUITE_REPO: ${{ github.repository_owner }}/acadsharp-rs-tests
+      # The suite's gate needs all of these, and they are here and not on the
+      # run step for the reason `Test` says at length: a REQUIRE variable that
+      # reaches one step of a job is a guard that is off everywhere the next
+      # step looks. Each turns "I cannot tell" or "there is nothing to run" from
+      # a printed reason into a failure.
+      #
+      # The suite's pin test asserts the sibling sits at the suite's
+      # COUNTERPART_REV. Here it deliberately does not: the sibling is this PR,
+      # which is the whole point. `github.sha` is what actions/checkout laid
+      # down in `acadsharp-rs/` for both events this workflow fires on (the
+      # branch head on `push`, the merge commit on `pull_request`), so it is the
+      # sha the suite should be told to expect, rather than
+      # `github.event.pull_request.head.sha`, which is not what is on disk.
+      VIPRS_REQUIRE_COUNTERPART: 1
+      VIPRS_COUNTERPART_EXPECTED_SHA: ${{ github.sha }}
+      # The suite's pin test for the fork. Set unconditionally: a suite that
+      # predates the fork pin ignores it.
+      ACADRUST_REQUIRE: 1
+      # Without an archive the suite runs its non-native subset and goes green
+      # having compiled every native test out, and the parity run has nothing to
+      # compare. The fetch step below lays it down; this makes its absence a
+      # failure.
+      ACADSHARP_REQUIRE_NATIVE: 1
+      # The parity run: a missing fixture, frozen output or emitter is red.
+      PARITY_REQUIRE_CORPUS: 1
     steps:
       # Two sibling checkouts under the workspace, because the suite depends on
       # this crate as `{ path = "../acadsharp-rs" }`. That makes the parent of
@@ -517,23 +542,32 @@ jobs:
       - name: Fetch the pinned native archive
         uses: ./acadsharp-rs/.github/actions/fetch-native-archive
 
-      - name: Run the pinned suite against this PR's tree
+      # Which three trees the gate is about to test, each beside the pin that
+      # names it. The acadsharp-rs row is this checkout's sha, which is what makes
+      # a green run here about this PR and not about whatever the suite pins.
+      - name: Say which trees the suite's gate tests
         working-directory: acadsharp-rs-tests
-        env:
-          # The suite's own pin test asserts the sibling sits at the suite's
-          # COUNTERPART_REV. Here it deliberately does not: the sibling is this
-          # PR, which is the whole point. `github.sha` is what actions/checkout
-          # laid down in `acadsharp-rs/` for both events this workflow fires on
-          # (the branch head on `push`, the merge commit on `pull_request`), so
-          # it is the sha the suite should be told to expect, rather than
-          # `github.event.pull_request.head.sha`, which is not what is on disk.
-          VIPRS_REQUIRE_COUNTERPART: 1
-          VIPRS_COUNTERPART_EXPECTED_SHA: ${{ github.sha }}
-          # The suite's pin test for the fork. Set unconditionally: a suite
-          # that predates the fork pin ignores it.
-          ACADRUST_REQUIRE: 1
-        # The workflow-level `RUSTFLAGS: -Dwarnings` reaches this too. That
-        # matches what the suite's own CI sets, so the suite is held to the same
-        # bar here as it is at home and this job cannot red on a warning its own
-        # repo tolerates.
-        run: cargo test --all-targets
+        run: tools/run-tests.sh --plan
+
+      # The suite's gate, and nothing else: `tools/run-tests.sh --in-ci` is the
+      # same command the pre-push hook runs for a push from this repo, so the
+      # job and the local gate are one script and there is no second copy of the
+      # test lines to keep in step. It runs the suite's own tests, the doc tests
+      # and the parity lane, and the parity lane's failure output is the verdict
+      # diff: the moved row, both verdicts and the first differing record.
+      #
+      # The workflow-level `RUSTFLAGS: -Dwarnings` reaches this too. That matches
+      # what the suite's own CI sets, so the suite is held to the same bar here as
+      # it is at home and this job cannot red on a warning its own repo tolerates.
+      - name: Run the pinned suite's gate against this PR's tree
+        working-directory: acadsharp-rs-tests
+        run: tools/run-tests.sh --in-ci
+
+      # For when Actions comes back. The emitted JSONL, the sidecars and run.json
+      # are where the gate leaves them for a local run; there is no second format
+      # and the diff itself is in the log above.
+      - name: Keep the parity run
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity
+          path: acadsharp-rs-tests/target/parity
