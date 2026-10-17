@@ -43,4 +43,6 @@
 # changed; only the commit id did. tests/suite_rev_reachable_issue_17.rs asks
 # git whether main reaches this line, so the next rewrite shows up as a red
 # test instead of as a fetch failure on the day GitHub collects the object.
-5f0e765417f1edaa78d97deba599fc14cb80d303
+00096da1c5bdca9d2384fc44bee6423cdc930c94
+# Moved to 00096da (acadsharp-rs-tests main @ 2026-10-16): the first commit that carries
+# tools/run-tests.sh and the parity run, which the Suite job now runs (R4.4).
