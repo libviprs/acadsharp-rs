@@ -5,6 +5,8 @@ artifacts published by [`libviprs-dep`](https://github.com/libviprs/libviprs-dep
 
 Callers get Rust types. Neither .NET nor ACadSharp internals reach them.
 
+**Experimental.** libviprs reads DWG through [acadrust](https://github.com/libviprs/acadrust) by default; this crate is the opt-in alternative behind libviprs' `dwg-acadsharp` feature. It is kept and maintained as an experiment, not removed.
+
 ## Using it
 
 ```rust
